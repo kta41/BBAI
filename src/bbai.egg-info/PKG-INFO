@@ -1,0 +1,190 @@
+Metadata-Version: 2.4
+Name: bbai
+Version: 0.1.0
+Summary: Local CLI for Bug Bounty research with Ollama models.
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: typer>=0.12.3
+Requires-Dist: pydantic>=2.10.6
+Requires-Dist: httpx>=0.27.0
+Requires-Dist: sqlalchemy>=2.0.36
+Requires-Dist: keyring>=25.6.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.3.4; extra == "dev"
+Requires-Dist: ruff>=0.7.1; extra == "dev"
+Requires-Dist: mypy>=1.13.0; extra == "dev"
+
+# bbai
+
+`bbai` is a local CLI for Bug Bounty / Web Security research that keeps the human investigator in the loop and uses local Ollama models as the analysis backend.
+
+The first phase focuses on a solid foundation: project setup, data model, storage, model abstraction, structured context generation, and a CLI entry point. It intentionally avoids autonomous offensive tooling and arbitrary code execution by the LLM.
+
+## Goals
+
+- Keep a local workspace for targets, evidence, notes, findings, and reports.
+- Use local LLMs through Ollama at `http://localhost:11434` by default.
+- Separate CLI, domain logic, context building, storage, and provider abstraction.
+- Keep the architecture extensible for future RAG, tool calling, and security workflow automation.
+
+## Architecture overview
+
+- CLI: interactive command layer (`bbai ...`)
+- Core: domain models and services
+- LLM: provider abstraction (`LLMProvider` / `OllamaProvider`)
+- Context: structured prompt building for evidence-aware analysis
+- Storage: SQLite + SQLAlchemy for local persistence
+- Tools: abstraction for security utilities and future integrations
+
+## Recommended stack
+
+This project uses:
+
+- Python 3.12+
+- Typer for CLI commands
+- Pydantic for configuration and validation
+- HTTPX for HTTP client communication
+- SQLAlchemy for local SQLite persistence
+- pytest for tests
+- Ruff for linting
+- mypy for static typing
+
+`uv` is a good optional tool for project management when available, but the project is intentionally compatible with standard Python packaging tools. This keeps setup reliable in environments where `uv` is not installed yet.
+
+## Quick start
+
+La forma recomendada de instalar el comando persistente es ejecutar el instalador una sola vez:
+
+```bash
+./setup.sh
+source ~/.profile
+bbai --help
+```
+
+El instalador crea `.venv`, instala el proyecto en modo editable y crea el ejecutable
+`~/.local/bin/bbai`. También añade `~/.local/bin` al `PATH` persistente del usuario.
+Después de reiniciar el equipo solo será necesario abrir una terminal y usar `bbai <comando>`.
+Para inicializar el workspace actual:
+
+```bash
+bbai init
+```
+
+Si `~/.local/bin` ya estaba en el `PATH`, el `source` no será necesario. También se puede
+cargar el instalador en la shell actual con `source ./setup.sh`.
+
+### Instalación manual
+
+Si se prefiere no usar el instalador:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
+bbai init
+bbai target add example.com --description "Example target" --scope "example.com"
+```
+
+## Example commands
+
+```bash
+bbai init
+bbai target add example.com --description "Public web app" --scope "*.example.com"
+bbai target use example.com
+bbai status
+bbai evidence add ./evidence/request.txt --kind http-request
+bbai evidence list
+bbai ask "¿Qué sabemos hasta ahora sobre este target?"
+bbai investigate "Comprueba la página principal y resume las cabeceras relevantes"
+bbai investigate "Analiza el target" --dry-run
+bbai tool list
+bbai tool check
+bbai tool executions
+bbai observation list
+bbai hypothesis list
+bbai analyze ./evidence/request.txt
+bbai finding list
+bbai finding review F-001
+bbai report F-001
+```
+
+El target activo se guarda en `.bbai.toml`, por lo que se mantiene entre sesiones y
+reinicios. Se puede sobrescribir puntualmente con `--target`.
+
+`bbai investigate --dry-run` permite revisar qué herramientas propone Ollama sin ejecutar
+ninguna acción. Cada intento se registra como ejecución con estado `dry_run`, `denied`,
+`failed` o `succeeded`:
+
+```bash
+bbai tool executions
+```
+
+## Evidencias
+
+Las evidencias se almacenan en SQLite y se incorporan automáticamente al contexto de
+`bbai ask` cuando existe un target activo:
+
+```bash
+bbai evidence add ./request.txt --kind http-request
+bbai evidence add ./response.txt --kind http-response
+bbai evidence list
+```
+
+La aplicación solo lee y persiste los ficheros indicados; no ejecuta contenido de
+evidencias ni permite que el modelo ejecute comandos.
+
+## Observations and hypotheses
+
+La fase 2 separa el dato crudo de su interpretación:
+
+```bash
+bbai observation add "La respuesta expone un header de debug" --evidence 1
+bbai observation list
+
+bbai hypothesis add \
+  "La información de debug podría estar disponible sin autenticación" \
+  --observation 1 \
+  --confidence medium
+bbai hypothesis list
+bbai hypothesis update 1 --status supported
+```
+
+Las observaciones y las hipótesis se incorporan al contexto de `bbai ask` e
+`bbai investigate`. Crear una observación o hipótesis es siempre una acción
+explícita del investigador; el modelo no convierte automáticamente cualquier
+respuesta en un finding.
+
+## Tool calling experimental
+
+El MVP incluye un primer flujo de tool calling mediante `bbai investigate`. Ollama puede
+proponer cuatro herramientas, siempre con aprobación interactiva y scope obligatorio:
+
+- `http_inspect`: GET de lectura con respuesta, cabeceras y cuerpo truncado.
+- `http_headers`: GET de lectura limitado a cabeceras.
+- `subfinder`: enumeración pasiva de subdominios mediante el binario instalado.
+- `ffuf`: descubrimiento de contenido acotado a una URL `FUZZ` y una wordlist local.
+
+```bash
+bbai target use example.com
+bbai investigate "Comprueba https://example.com/ y resume la respuesta"
+```
+
+Cada ejecución autorizada se almacena como evidencia `tool-<nombre>`. No existe
+ejecución de shell arbitraria ni peticiones fuera de scope. Las herramientas externas se
+ejecutan con argumentos construidos por la aplicación, sin `shell=True`, con timeout y
+límite de salida. El modelo propone la herramienta, pero la aplicación valida el nombre,
+los argumentos, el protocolo, el scope y la aprobación humana antes de ejecutarla. `subfinder`
+y `ffuf` deben estar instalados por el usuario y disponibles en `PATH`.
+
+## Design principles
+
+- Human-in-the-loop by default.
+- Safe, local-first execution with no secret exfiltration.
+- Modular services instead of business logic inside the CLI.
+- Persistence-first workflow for evidence and findings.
+- Extensible provider layer for future model backends.
+
+## Current status
+
+This repository contains the initial architecture and scaffolding for a professional, extensible foundation. The current implementation intentionally focuses on structure, not on offensive automation or autonomous exploitation tooling.
