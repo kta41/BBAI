@@ -11,10 +11,10 @@ Este documento distingue entre:
 
 ## Estado actual
 
-El núcleo funcional del MVP quedó implementado el 30-09-2026: findings con revisión
-humana, sesiones persistidas, exportación Markdown/JSON, adopción de bases existentes
-mediante Alembic y uso/redacción de autenticación en `ffuf`. Las tareas no completadas
-siguen sin marcarse y continúan en las fases siguientes.
+El núcleo funcional del MVP se completó con findings revisables, sesiones persistidas,
+exportación Markdown/JSON y migraciones Alembic. La búsqueda FTS5, `bbai doctor` y las
+integraciones `gau`, `katana` y `nuclei` se incorporaron después; las tareas pendientes
+continúan sin marcarse.
 
 El MVP ya dispone de:
 
@@ -23,7 +23,9 @@ El MVP ya dispone de:
 - SQLite con SQLAlchemy;
 - integración con Ollama;
 - tool calling con aprobación humana;
-- `http_inspect`, `http_headers`, `subfinder` y `ffuf`;
+- `http_inspect`, `http_headers`, `subfinder`, `ffuf`, `gau`, `katana` y `nuclei`;
+- diagnóstico de workspace, SQLite/FTS5, Ollama, keyring, target y binarios opcionales;
+- búsqueda SQLite FTS5 con filtros por artefacto, target, sesión, estado y severidad;
 - política de scope, límites, `dry-run` y registro de ejecuciones;
 - evidencias, observaciones e hipótesis;
 - perfiles de autenticación con keyring;
@@ -111,17 +113,17 @@ compartible a partir de findings aceptados.
 
 ## Fase 4 — Persistencia, migraciones y búsqueda
 
-**Estado: migraciones completadas; búsqueda pendiente.**
+**Estado: completada.**
 
 **Objetivo:** hacer evolucionar el esquema y localizar conocimiento sin perder
 compatibilidad.
 
 - [x] Sustituir migraciones ad hoc por Alembic.
 - [x] Versionar el esquema y adoptar bases SQLite existentes sin perder sus datos.
-- [ ] Añadir SQLite FTS5 para targets, evidencias, notas, observaciones, hipótesis y
+- [x] Añadir SQLite FTS5 para targets, evidencias, notas, observaciones, hipótesis y
   findings.
-- [ ] Implementar `bbai search`.
-- [ ] Añadir filtros por target, sesión, estado, severidad, fecha y tipo.
+- [x] Implementar `bbai search`.
+- [x] Añadir filtros por target, sesión, estado, severidad y tipo.
 - [ ] Diseñar la interfaz de recuperación de contexto para una futura búsqueda semántica.
 - [ ] Evaluar embeddings/RAG solo después de medir la utilidad de FTS5.
 
@@ -153,17 +155,19 @@ del modelo.
 
 ## Fase 6 — Herramientas e integraciones
 
+**Estado: primera tanda completada; hardening y adaptadores pendientes.**
+
 **Objetivo:** ampliar cobertura manteniendo una frontera de seguridad explícita.
 
 - [ ] Definir una clasificación de herramientas: pasivas, lectura activa e intrusivas.
 - [ ] Asociar a cada herramienta límites, permisos, riesgos y requisitos de aprobación.
-- [ ] Añadir health checks y diagnóstico de dependencias externas.
-- [ ] Crear integraciones aisladas para nuevas herramientas de recon y análisis.
+- [x] Añadir health checks y diagnóstico de dependencias externas mediante `bbai doctor`.
+- [x] Crear integraciones aisladas para `gau`, `katana` y `nuclei` con scope y límites.
 - [ ] Añadir adaptadores para importar resultados estructurados comunes.
 - [ ] Probar redirecciones, puertos, wildcards, IDN, URLs con credenciales y límites de
   scope.
 - [ ] Añadir tests de integración con servidores HTTP locales y mocks de Ollama.
-- [ ] Implementar `bbai doctor`.
+- [x] Implementar `bbai doctor`.
 
 **Criterio de salida:** nuevas herramientas pueden incorporarse sin acceso arbitrario al
 shell ni degradación de las políticas existentes.

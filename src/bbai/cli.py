@@ -18,6 +18,7 @@ from bbai.auth.store import KeyringSecretStore
 from bbai.config import Settings
 from bbai.context.builder import ContextInput, build_context
 from bbai.db import init_db
+from bbai.diagnostics import run_diagnostics
 from bbai.llm.provider import OllamaProvider
 from bbai.services.project_service import FindingData, ProjectService
 from bbai.tools.policy import ScopePolicy
@@ -200,6 +201,73 @@ def status() -> None:
         raise typer.Exit(code=1)
     typer.echo(f"Active target: {target['name']}")
     typer.echo(f"Scope: {target['scope'] or 'Not specified'}")
+
+
+@app.command("doctor")
+def doctor() -> None:
+    """Check workspace, database, Ollama, keyring and optional tool dependencies."""
+    settings = Settings.load(Path.cwd())
+    checks = run_diagnostics(settings)
+    symbols = {"ok": "OK", "warning": "WARN", "error": "FAIL"}
+    for check in checks:
+        typer.echo(f"[{symbols[check['status']]}] {check['name']}: {check['detail']}")
+    if any(check["status"] == "error" for check in checks):
+        raise typer.Exit(code=1)
+
+
+@app.command("search")
+def search_artifacts(
+    query: str | None = typer.Argument(None, help="Text to search for."),
+    target_name: str = typer.Option("", "--target", "-t", help="Filter by target."),
+    artifact_type: str = typer.Option(
+        "",
+        "--type",
+        help="Filter: target, evidence, observation, hypothesis, finding, note, session_event.",
+    ),
+    session_id: int | None = typer.Option(None, "--session", help="Filter by numeric session ID."),
+    status: str = typer.Option("", "--status", help="Filter by artifact status."),
+    severity: str = typer.Option("", "--severity", help="Filter findings by severity."),
+    limit: int = typer.Option(20, "--limit", min=1, max=100),
+    rebuild: bool = typer.Option(False, "--rebuild", help="Rebuild the full-text index."),
+) -> None:
+    settings = Settings.load(Path.cwd())
+    service = ProjectService(str(settings.db_path))
+    if rebuild:
+        count = service.rebuild_search_index()
+        typer.echo(f"Search index rebuilt ({count} artifacts).")
+        if query is None:
+            return
+    if not query:
+        typer.echo("Provide a query or use --rebuild.", err=True)
+        raise typer.Exit(code=2)
+    try:
+        results = service.search_artifacts(
+            query,
+            target_name=target_name or None,
+            artifact_type=artifact_type or None,
+            session_id=session_id,
+            status=status or None,
+            severity=severity or None,
+            limit=limit,
+        )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+    if not results:
+        typer.echo("No matching artifacts.")
+        return
+    for result in results:
+        session = f" S-{result['session_id']:03d}" if result["session_id"] is not None else ""
+        classification = " ".join(
+            value
+            for value in (result["status"], result["severity"])
+            if isinstance(value, str) and value
+        )
+        typer.echo(
+            f"- {result['type']}:{result['id']} [{result['target']}{session}] "
+            f"{result['title']} {f'({classification})' if classification else ''}\n"
+            f"  {result['snippet']}"
+        )
 
 
 @_session_app.command("create")
@@ -1162,10 +1230,7 @@ def _redact_nested(value: object, secrets: tuple[str, ...]) -> object:
     if isinstance(value, str):
         return redact_secrets(value, secrets)
     if isinstance(value, dict):
-        return {
-            str(key): _redact_nested(item, secrets)
-            for key, item in value.items()
-        }
+        return {str(key): _redact_nested(item, secrets) for key, item in value.items()}
     if isinstance(value, list):
         return [_redact_nested(item, secrets) for item in value]
     return value

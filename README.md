@@ -41,10 +41,10 @@ Question
 ```
 
 The MVP includes the core investigation loop, local Ollama tool calling, scope validation,
-four controlled tools, authenticated HTTP profiles, redaction, evidence, observations,
-hypotheses, reviewed findings, resumable investigation sessions, and Markdown/JSON
-reporting. The remaining roadmap focuses on search, advanced authentication, additional
-integrations, and operational hardening.
+seven controlled tools, authenticated HTTP profiles, redaction, evidence, observations,
+hypotheses, reviewed findings, resumable investigation sessions, Markdown/JSON reporting,
+SQLite FTS5 search, and workspace diagnostics. The remaining roadmap focuses on advanced
+authentication, additional integrations, and operational hardening.
 
 See the detailed plan in [ROADMAP.md](ROADMAP.md).
 
@@ -139,6 +139,8 @@ bbai finding create "Debug disclosure" "The response exposes debug metadata" --s
 bbai finding update 1 --status in_review
 bbai finding review 1 --decision accepted --note "Verified manually"
 bbai report 1 --format markdown --output report.md
+bbai doctor
+bbai search "security headers" --type evidence
 ```
 
 El target activo se guarda en `.bbai.toml`, por lo que se mantiene entre sesiones y
@@ -250,18 +252,24 @@ bbai auth revoke normal-user
 
 Esta primera versión soporta `bearer`, `cookie`, `api_key` y `headers`. La importación
 de cookies exportadas desde un navegador y los flujos OAuth/SSO se añadirán después; el
-login y MFA siguen siendo manuales. Los perfiles se aplican también a `ffuf` mediante
-headers y sus valores se redactan en la salida persistida.
+login y MFA siguen siendo manuales. Los perfiles se aplican también a `ffuf`, `katana` y
+`nuclei` mediante headers; `gau` solo los usa para redactar valores, sin enviar
+credenciales al servicio de archivos históricos. Sus valores se eliminan de las salidas
+persistidas.
 
 ## Tool calling experimental
 
 El MVP incluye un primer flujo de tool calling mediante `bbai investigate`. Ollama puede
-proponer cuatro herramientas, siempre con aprobación interactiva y scope obligatorio:
+proponer siete herramientas, siempre con aprobación interactiva y scope obligatorio:
 
 - `http_inspect`: GET de lectura con respuesta, cabeceras y cuerpo truncado.
 - `http_headers`: GET de lectura limitado a cabeceras.
 - `subfinder`: enumeración pasiva de subdominios mediante el binario instalado.
 - `ffuf`: descubrimiento de contenido acotado a una URL `FUZZ` y una wordlist local.
+- `gau`: recopilación pasiva de URLs archivadas, filtradas por el scope aprobado.
+- `katana`: crawl limitado al hostname inicial y al scope aprobado.
+- `nuclei`: solo ejecuta dos comprobaciones locales de bajo impacto para cabeceras HTTP;
+  el modelo no puede elegir plantillas ni límites.
 
 ```bash
 bbai target use example.com
@@ -272,8 +280,17 @@ Cada ejecución autorizada se almacena como evidencia `tool-<nombre>`. No existe
 ejecución de shell arbitraria ni peticiones fuera de scope. Las herramientas externas se
 ejecutan con argumentos construidos por la aplicación, sin `shell=True`, con timeout y
 límite de salida. El modelo propone la herramienta, pero la aplicación valida el nombre,
-los argumentos, el protocolo, el scope y la aprobación humana antes de ejecutarla. `subfinder`
-y `ffuf` deben estar instalados por el usuario y disponibles en `PATH`.
+los argumentos, el protocolo, el scope y la aprobación humana antes de ejecutarla. `subfinder`,
+`ffuf`, `gau`, `katana` y `nuclei` deben estar instalados por el usuario y disponibles en
+`PATH`.
+
+`bbai doctor` revisa el workspace, SQLite/migraciones/FTS5, Ollama y el modelo configurado,
+el keyring, el target activo y los binarios opcionales. Las advertencias señalan
+dependencias opcionales o configuración ausente; un error de base de datos/diagnóstico
+devuelve un código de salida distinto de cero. `bbai search` consulta el índice local
+FTS5 de targets, evidencias, observaciones, hipótesis, findings, notas y eventos de
+sesión. Usa `--target`, `--session`, `--type`, `--status` y `--severity` para acotar la
+búsqueda, o `--rebuild` para recrear el índice.
 
 ## Design principles
 
@@ -285,4 +302,7 @@ y `ffuf` deben estar instalados por el usuario y disponibles en `PATH`.
 
 ## Current status
 
-This repository contains the initial architecture and scaffolding for a professional, extensible foundation. The current implementation intentionally focuses on structure, not on offensive automation or autonomous exploitation tooling.
+This is an operational local-first MVP, not an autonomous exploitation agent. Tool
+execution remains scoped, bounded, auditable, and subject to human approval. See
+[ROADMAP.md](ROADMAP.md) for advanced authentication, supervised workflows, frontend,
+backup/restore, and further hardening.

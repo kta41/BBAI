@@ -44,11 +44,12 @@ Pregunta
   → Informe
 ```
 
-El MVP actual ya incluye el ciclo básico de investigación, tool calling local con
-Ollama, validación de scope, cuatro herramientas controladas, registro de ejecuciones,
-perfiles HTTP autenticados, redacción de secretos, persistencia de evidencias,
-observaciones e hipótesis. El roadmap pendiente se centra en completar findings, flujos
-de revisión, informes, sesiones, búsquedas e integraciones más avanzadas.
+El MVP actual incluye el ciclo de investigación, tool calling local con Ollama,
+validación de scope, siete herramientas controladas, perfiles HTTP autenticados,
+redacción de secretos, evidencias, observaciones e hipótesis, findings revisables,
+sesiones persistidas, informes Markdown/JSON, búsqueda SQLite FTS5 y diagnóstico del
+workspace. El roadmap pendiente se centra en autenticación avanzada, más integraciones y
+hardening operativo.
 
 Consulta el plan detallado en [ROADMAP.md](ROADMAP.md).
 
@@ -126,6 +127,8 @@ bbai evidence list
 bbai observation list
 bbai hypothesis list
 bbai tool executions
+bbai doctor
+bbai search "cabeceras de seguridad" --type evidence
 ```
 
 Para probar tool calling sin ejecutar acciones:
@@ -166,17 +169,29 @@ mostrar o escribir el informe se redactan secretos de los perfiles activos del k
 
 ## Herramientas y seguridad
 
-Ollama puede proponer cuatro herramientas, siempre con aprobación interactiva y scope
+Ollama puede proponer siete herramientas, siempre con aprobación interactiva y scope
 obligatorio:
 
 - `http_inspect`: GET de lectura con respuesta, cabeceras y cuerpo truncado.
 - `http_headers`: GET de lectura limitado a cabeceras.
 - `subfinder`: enumeración pasiva de subdominios.
 - `ffuf`: descubrimiento de contenido acotado a una URL `FUZZ` y una wordlist local.
+- `gau`: recopilación pasiva de URLs archivadas, filtradas por el scope aprobado.
+- `katana`: crawl limitado al hostname inicial y al scope aprobado.
+- `nuclei`: solo ejecuta dos comprobaciones locales de bajo impacto para cabeceras HTTP;
+  el modelo no puede elegir plantillas ni límites.
 
 No existe ejecución arbitraria de shell. Las herramientas externas se ejecutan con
 argumentos construidos por la aplicación, sin `shell=True`, con timeout y límite de
 salida.
+
+`bbai doctor` revisa el workspace, SQLite/migraciones/FTS5, Ollama y el modelo
+configurado, el keyring, el target activo y los binarios opcionales. Las advertencias
+señalan dependencias opcionales o configuración ausente; un error de base de
+datos/diagnóstico devuelve un código distinto de cero. `bbai search` consulta el índice
+local FTS5 de targets, evidencias, observaciones, hipótesis, findings, notas y eventos
+de sesión. Se puede filtrar con `--target`, `--session`, `--type`, `--status` y
+`--severity`, o reconstruirlo con `--rebuild`.
 
 ## Evidencias, observaciones e hipótesis
 
@@ -237,7 +252,9 @@ bbai auth revoke normal-user
 Esta versión soporta `bearer`, `cookie`, `api_key` y `headers`. El login y MFA siguen
 siendo manuales; la importación de cookies desde navegador y OAuth/SSO quedan para una
 fase posterior. Los perfiles también se aplican a `ffuf` mediante headers y sus valores
-se redactan en la salida persistida.
+se redactan en la salida persistida. Los perfiles también se aplican a `katana` y
+`nuclei` mediante headers. `gau` los usa solo para redactar valores y no envía
+credenciales al servicio de archivos históricos.
 
 ## Principios
 
@@ -259,6 +276,7 @@ Ya están integrados:
 - integración básica con Ollama;
 - tool calling;
 - `http_inspect`, `http_headers`, `subfinder` y `ffuf`;
+- `gau`, `katana` y `nuclei` con scope, límites y registro de ejecuciones;
 - scope policy;
 - aprobación humana;
 - dry-run;
@@ -273,16 +291,17 @@ Ya están integrados:
 - sesiones persistidas y reanudables;
 - informes Markdown/JSON;
 - migraciones Alembic con adopción de workspaces existentes;
-- autenticación de `ffuf` con redacción de secretos.
+- autenticación de `ffuf` con redacción de secretos;
+- búsqueda SQLite FTS5 y comando `bbai search`;
+- diagnóstico `bbai doctor`.
 
 Pendiente:
 
-1. SQLite FTS5 y búsqueda;
-2. importación de cookies y OAuth/SSO;
-3. comparación entre perfiles de autenticación;
-4. nuevas herramientas con políticas específicas;
-5. autonomía supervisada y frontend (propuestas aún por aprobar);
-6. backup, restore, exportación/importación y hardening operativo.
+1. importación de cookies y OAuth/SSO;
+2. comparación entre perfiles de autenticación;
+3. clasificación de riesgo y más integraciones;
+4. autonomía supervisada y frontend (propuestas aún por aprobar);
+5. backup, restore, exportación/importación y hardening operativo.
 
 Findings/revisión, sesiones persistidas, informes Markdown/JSON, migraciones Alembic y
 autenticación de `ffuf` ya están implementados. El detalle de tareas y criterios de salida

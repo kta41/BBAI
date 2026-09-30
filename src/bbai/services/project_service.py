@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from typing import TypedDict, TypeVar
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from bbai.auth.redaction import redact_secrets
@@ -433,6 +434,64 @@ class ProjectService:
                 ),
             }
 
+    def search_artifacts(
+        self,
+        query: str,
+        *,
+        target_name: str | None = None,
+        artifact_type: str | None = None,
+        session_id: int | None = None,
+        status: str | None = None,
+        severity: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, object]]:
+        tokens = re.findall(r"[\w.-]+", query, flags=re.UNICODE)
+        if not tokens:
+            raise ValueError("Search query must contain at least one searchable term")
+        if not 1 <= limit <= 100:
+            raise ValueError("Search result limit must be between 1 and 100")
+        fts_query = " AND ".join(f'"{token}"' for token in tokens)
+        clauses = ["search_index MATCH :query"]
+        params: dict[str, object] = {"query": fts_query, "limit": limit}
+        for field, value in (
+            ("target_name", target_name),
+            ("artifact_type", artifact_type),
+            ("session_id", session_id),
+            ("status", status),
+            ("severity", severity),
+        ):
+            if value is not None:
+                clauses.append(f"search_index.{field} = :{field}")
+                params[field] = value
+        statement = text(
+            "SELECT artifact_type, artifact_id, target_name, session_id, status, severity, "
+            "title, snippet(search_index, -1, '[', ']', '…', 18) AS snippet "
+            "FROM search_index WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY bm25(search_index) LIMIT :limit"
+        )
+        with self.session() as db_session:
+            rows = db_session.execute(statement, params).mappings().all()
+            return [
+                {
+                    "type": row["artifact_type"],
+                    "id": row["artifact_id"],
+                    "target": row["target_name"],
+                    "session_id": row["session_id"],
+                    "status": row["status"],
+                    "severity": row["severity"],
+                    "title": row["title"],
+                    "snippet": row["snippet"],
+                }
+                for row in rows
+            ]
+
+    def rebuild_search_index(self) -> int:
+        with self.session() as db_session:
+            db_session.execute(text("INSERT INTO search_index(search_index) VALUES ('rebuild')"))
+            result = db_session.execute(text("SELECT count(*) FROM search_documents"))
+            return int(result.scalar_one())
+
     def add_observation(
         self,
         *,
@@ -750,9 +809,13 @@ class ProjectService:
                 statement = statement.where(Finding.id == finding_id)
             if target_name is not None:
                 statement = statement.where(Target.name == target_name)
-            reportable_statuses = ("accepted", "reported", "draft") if include_drafts else (
-                "accepted",
-                "reported",
+            reportable_statuses = (
+                ("accepted", "reported", "draft")
+                if include_drafts
+                else (
+                    "accepted",
+                    "reported",
+                )
             )
             if include_drafts:
                 statement = statement.where(Finding.status.in_(reportable_statuses))
@@ -765,7 +828,9 @@ class ProjectService:
                     raise ValueError(f"Finding F-{finding_id:03d} does not exist")
                 if existing.status == "draft" and not include_drafts:
                     raise ValueError("Draft findings require explicit --include-drafts")
-                raise ValueError("Only accepted or explicitly included draft findings can be reported")
+                raise ValueError(
+                    "Only accepted or explicitly included draft findings can be reported"
+                )
             return [self._finding_data(finding) for finding in findings]
 
     def create_session(self, *, target_name: str, title: str) -> int:

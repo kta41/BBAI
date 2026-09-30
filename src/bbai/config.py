@@ -63,7 +63,7 @@ class Settings(BaseModel):
             "[ollama]\n"
             f'base_url = "{self.ollama.base_url}"\n'
             f'default_model = "{self.ollama.default_model}"\n'
-            f'timeout_seconds = {self.ollama.timeout_seconds}\n',
+            f"timeout_seconds = {self.ollama.timeout_seconds}\n",
             encoding="utf-8",
         )
         return config_file

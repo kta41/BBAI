@@ -1,0 +1,23 @@
+id: bbai-missing-x-content-type-options
+
+info:
+  name: Missing X-Content-Type-Options Header
+  author: bbai
+  severity: info
+  description: An HTTP response is missing an X-Content-Type-Options header.
+  tags: bbai-safe,misconfiguration,headers
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+      - type: word
+        part: header
+        words:
+          - "x-content-type-options:"
+        negative: true

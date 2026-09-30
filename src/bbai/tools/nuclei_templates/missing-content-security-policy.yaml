@@ -1,0 +1,23 @@
+id: bbai-missing-content-security-policy
+
+info:
+  name: Missing Content Security Policy Header
+  author: bbai
+  severity: info
+  description: An HTTP response is missing a Content-Security-Policy header.
+  tags: bbai-safe,misconfiguration,headers
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+      - type: word
+        part: header
+        words:
+          - "content-security-policy:"
+        negative: true
