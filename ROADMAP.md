@@ -12,9 +12,9 @@ Este documento distingue entre:
 ## Estado actual
 
 El núcleo funcional del MVP se completó con findings revisables, sesiones persistidas,
-exportación Markdown/JSON y migraciones Alembic. La búsqueda FTS5, `bbai doctor` y las
-integraciones `gau`, `katana` y `nuclei` se incorporaron después; las tareas pendientes
-continúan sin marcarse.
+exportación Markdown/JSON y migraciones Alembic. Se añadieron después búsqueda FTS5 y
+semántica experimental, `bbai doctor`, portabilidad del workspace y adaptadores para
+resultados de scanners.
 
 El MVP ya dispone de:
 
@@ -80,7 +80,7 @@ obtener el historial completo que lo respalda.
 
 ## Fase 2 — Sesiones y continuidad de investigación
 
-**Estado: núcleo completado; etiquetas y exportación de sesiones pendientes.**
+**Estado: completada.**
 
 **Objetivo:** convertir ejecuciones aisladas en investigaciones reanudables.
 
@@ -90,14 +90,14 @@ obtener el historial completo que lo respalda.
 - [x] Añadir notas manuales.
 - [x] Implementar `session list`, `session show`, `session resume` y cierre.
 - [x] Incluir eventos y notas recientes como contexto al reanudar una investigación.
-- [ ] Añadir etiquetas, política de retención y exportación de sesiones.
+- [x] Añadir etiquetas, retención segura de sesiones cerradas/pausadas y exportación JSON.
 
 **Criterio de salida:** una investigación puede pausarse y reanudarse conservando
 contexto, decisiones y trazabilidad.
 
 ## Fase 3 — Reporting y exportación
 
-**Estado: exportación básica completada; plantillas y previsualización avanzada pendientes.**
+**Estado: exportación Markdown/JSON y plantillas Markdown completadas.**
 
 **Objetivo:** transformar el trabajo revisado en entregables utilizables.
 
@@ -106,7 +106,7 @@ contexto, decisiones y trazabilidad.
 - [x] Incluir únicamente findings aceptados/reportados salvo opción explícita de borradores.
 - [x] Incorporar evidencias, impacto, severidad, pasos de reproducción y mitigación.
 - [x] Añadir metadatos del target, sesión y perfil de autenticación sin exponer secretos.
-- [ ] Añadir plantillas configurables por programa o equipo.
+- [x] Añadir plantillas Markdown configurables con placeholders para informes.
 - [x] Implementar salida a pantalla y `--output` para exportar.
 - [x] Redactar secretos de perfiles activos y cabeceras sensibles en el informe.
 
@@ -115,7 +115,7 @@ compartible a partir de findings aceptados.
 
 ## Fase 4 — Persistencia, migraciones y búsqueda
 
-**Estado: completada.**
+**Estado: FTS5 completada; búsqueda semántica y evaluación disponibles en modo experimental.**
 
 **Objetivo:** hacer evolucionar el esquema y localizar conocimiento sin perder
 compatibilidad.
@@ -126,28 +126,31 @@ compatibilidad.
   findings.
 - [x] Implementar `bbai search`.
 - [x] Añadir filtros por target, sesión, estado, severidad y tipo.
-- [ ] Diseñar la interfaz de recuperación de contexto para una futura búsqueda semántica.
-- [ ] Evaluar embeddings/RAG solo después de medir la utilidad de FTS5.
+- [x] Añadir ranking semántico local mediante embeddings de Ollama, manteniendo FTS5.
+- [x] Añadir evaluación reproducible de FTS5/semántica con precision@k, recall@k,
+  reciprocal rank y latencia.
+- [ ] Evaluar RAG/contexto semántico persistente después de acumular métricas de uso.
 
 **Criterio de salida:** las instalaciones existentes migran de forma segura y el
 investigador puede encontrar rápidamente cualquier artefacto relevante.
 
 ## Fase 5 — Autenticación avanzada y perfiles de ejecución
 
-**Estado: uso autenticado de `ffuf` completado; resto pendiente.**
+**Estado: perfiles, expiración, importación de cookies y comparación de respuestas completados.**
 
 **Objetivo:** cubrir aplicaciones autenticadas reales sin convertir las credenciales en
 datos de la investigación.
 
 - [x] Aplicar headers autenticados a `ffuf`.
 - [x] Redactar valores secretos de la salida de `ffuf`.
-- [ ] Permitir expiración configurable desde CLI.
-- [ ] Añadir perfiles explícitos `anonymous`, `user`, `admin` y equivalentes definidos
+- [x] Permitir expiración configurable desde CLI.
+- [x] Añadir perfiles explícitos `anonymous`, `user`, `admin` y equivalentes definidos
   por el investigador.
-- [ ] Comparar resultados entre perfiles para detectar diferencias de autorización.
-- [ ] Añadir importación manual de cookies con confirmación y redacción.
+- [x] Comparar respuestas entre perfiles mediante solicitudes GET en scope aprobadas
+  individualmente; comparar estado, tipo de contenido y hash sin persistir el cuerpo.
+- [x] Añadir importación manual de cookies con confirmación y redacción.
+- [x] Diagnosticar disponibilidad del keyring mediante `bbai doctor`.
 - [ ] Evaluar OAuth/SSO y refresh tokens sin automatizar MFA de forma insegura.
-- [ ] Añadir diagnóstico claro cuando el keyring no esté disponible.
 - [ ] Evaluar un almacén cifrado local como alternativa opt-in, nunca como fallback
   silencioso.
 
@@ -157,7 +160,7 @@ del modelo.
 
 ## Fase 6 — Herramientas e integraciones
 
-**Estado: primera tanda y hardening de scope/aprobación completados; adaptadores pendientes.**
+**Estado: primera tanda, hardening de scope/aprobación y adaptadores completados.**
 
 **Objetivo:** ampliar cobertura manteniendo una frontera de seguridad explícita.
 
@@ -165,7 +168,8 @@ del modelo.
 - [x] Asociar a cada herramienta límites, permisos, riesgos y requisitos de aprobación.
 - [x] Añadir health checks y diagnóstico de dependencias externas mediante `bbai doctor`.
 - [x] Crear integraciones aisladas para `gau`, `katana` y `nuclei` con scope y límites.
-- [ ] Añadir adaptadores para importar resultados estructurados comunes.
+- [x] Añadir importadores Nuclei JSONL y SARIF; limitar el tamaño y descartar
+  ubicaciones fuera del scope, creando findings en borrador.
 - [x] Probar redirecciones, puertos, wildcards, IDN, URLs con credenciales y límites de
   scope.
 - [x] Añadir tests de integración con servidores HTTP locales y mocks de Ollama.
@@ -182,10 +186,12 @@ shell ni degradación de las políticas existentes.
   flujos de CLI y almacenamiento de credenciales.
 - [x] Añadir logs estructurados sin secretos.
 - [x] Definir una política de backup y restauración de la base local.
-- [ ] Añadir exportación/importación de workspace.
+- [x] Añadir exportación/importación portable de la base de workspace en ZIP versionado,
+  con checksum, validación y reemplazo explícito; excluir configuración y secretos.
 - [x] Revisar permisos de archivos y directorios creados por `bbai`.
 - [x] Añadir pruebas de regresión para redacción, scope, aprobación y persistencia.
-- [ ] Medir tiempos, tamaño de contexto y coste local de las investigaciones.
+- [x] Exponer métricas locales de tamaño de contexto/tiempo de herramientas y evaluación
+  de búsqueda; el coste LLM no está disponible porque Ollama no persiste ese uso.
 - [x] Documentar límites conocidos y modelo de amenazas.
 
 **Criterio de salida:** el proyecto ofrece diagnósticos, recuperación y garantías

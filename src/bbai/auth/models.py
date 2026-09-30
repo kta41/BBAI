@@ -10,6 +10,7 @@ class AuthProfile:
     auth_type: str
     secret_ref: str
     expires_at: datetime | None = None
+    role: str = "custom"
 
 
 @dataclass(frozen=True)

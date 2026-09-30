@@ -4,10 +4,11 @@ import json
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TypedDict, TypeVar
 
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
+from sqlalchemy import update as sa_update
 from sqlalchemy.orm import Session
 
 from bbai.auth.redaction import redact_secrets
@@ -23,6 +24,10 @@ from bbai.models import (
     SessionEvent,
     Target,
     ToolExecution,
+    finding_evidence,
+    finding_executions,
+    finding_hypotheses,
+    finding_observations,
     utc_now,
 )
 from bbai.models import (
@@ -67,6 +72,15 @@ class FindingData(TypedDict):
     reviews: list[ReviewData]
 
 
+class ImportedFindingInput(TypedDict):
+    title: str
+    summary: str
+    severity: str
+    evidence_source: str
+    evidence_kind: str
+    evidence_content: str
+
+
 class FindingSummary(TypedDict):
     id: int
     title: str
@@ -82,6 +96,7 @@ class SessionSummary(TypedDict):
     status: str
     created_at: datetime
     updated_at: datetime
+    labels: list[str]
 
 
 class SessionNoteData(TypedDict):
@@ -101,6 +116,7 @@ class SessionData(TypedDict):
     target: str
     title: str
     status: str
+    labels: list[str]
     notes: list[SessionNoteData]
     events: list[SessionEventData]
 
@@ -169,8 +185,13 @@ class ProjectService:
         name: str,
         auth_type: str,
         secret_ref: str,
+        role: str = "custom",
         expires_at: datetime | None = None,
     ) -> int:
+        if role not in {"anonymous", "user", "admin", "custom"}:
+            raise ValueError("Auth profile role must be anonymous, user, admin, or custom")
+        if expires_at is not None and expires_at.tzinfo is None:
+            raise ValueError("Auth profile expiration must include a timezone")
         with self.session() as db_session:
             target = db_session.execute(
                 select(Target).where(Target.name == target_name)
@@ -182,6 +203,7 @@ class ProjectService:
                 name=name,
                 auth_type=auth_type,
                 secret_ref=secret_ref,
+                role=role,
                 expires_at=expires_at,
             )
             db_session.add(profile)
@@ -209,6 +231,7 @@ class ProjectService:
                     "id": profile.id,
                     "name": profile.name,
                     "auth_type": profile.auth_type,
+                    "role": profile.role,
                     "secret_ref": profile.secret_ref,
                     "expires_at": profile.expires_at,
                 }
@@ -232,9 +255,19 @@ class ProjectService:
                 "id": profile.id,
                 "name": profile.name,
                 "auth_type": profile.auth_type,
+                "role": profile.role,
                 "secret_ref": profile.secret_ref,
                 "expires_at": profile.expires_at,
             }
+
+    def auth_profile_exists(self, *, target_name: str, name: str) -> bool:
+        with self.session() as db_session:
+            profile_id = db_session.execute(
+                select(AuthProfile.id)
+                .join(Target)
+                .where(Target.name == target_name, AuthProfile.name == name)
+            ).scalar_one_or_none()
+            return profile_id is not None
 
     def disable_auth_profile(self, *, target_name: str, name: str) -> dict[str, object]:
         with self.session() as db_session:
@@ -689,6 +722,47 @@ class ProjectService:
             db_session.flush()
             return finding.id
 
+    def add_imported_findings(
+        self,
+        *,
+        target_name: str,
+        imported: list[ImportedFindingInput],
+        session_id: int | None = None,
+    ) -> list[int]:
+        supported_severities = {"info", "low", "medium", "high", "critical"}
+        if any(item["severity"] not in supported_severities for item in imported):
+            raise ValueError("Imported findings contain an unsupported severity")
+        with self.session() as db_session:
+            target = db_session.execute(
+                select(Target).where(Target.name == target_name)
+            ).scalar_one_or_none()
+            if target is None:
+                raise ValueError(f"Target '{target_name}' does not exist")
+            self._validate_session(db_session, session_id, target.id)
+            finding_ids: list[int] = []
+            for item in imported:
+                evidence = Evidence(
+                    target_id=target.id,
+                    session_id=session_id,
+                    source=item["evidence_source"],
+                    kind=item["evidence_kind"],
+                    content=redact_secrets(item["evidence_content"]),
+                )
+                finding = Finding(
+                    target_id=target.id,
+                    session_id=session_id,
+                    title=item["title"],
+                    summary=item["summary"],
+                    severity=item["severity"],
+                    status="draft",
+                    confidence="unknown",
+                    evidence=[evidence],
+                )
+                db_session.add(finding)
+                db_session.flush()
+                finding_ids.append(finding.id)
+            return finding_ids
+
     def list_findings(self, *, target_name: str | None = None) -> list[FindingSummary]:
         with self.session() as db_session:
             statement = select(Finding)
@@ -845,6 +919,17 @@ class ProjectService:
             db_session.flush()
             return session.id
 
+    def update_session_labels(self, session_id: int, labels: list[str]) -> None:
+        normalized = list(dict.fromkeys(label.strip() for label in labels if label.strip()))
+        if len(normalized) > 32 or any(len(label) > 64 for label in normalized):
+            raise ValueError("Sessions support up to 32 labels, each no longer than 64 characters")
+        with self.session() as db_session:
+            session = db_session.get(InvestigationSession, session_id)
+            if session is None:
+                raise ValueError(f"Session S-{session_id:03d} does not exist")
+            session.labels = normalized
+            session.updated_at = utc_now()
+
     def list_sessions(self, *, target_name: str) -> list[SessionSummary]:
         with self.session() as db_session:
             target = db_session.execute(
@@ -868,6 +953,7 @@ class ProjectService:
                     "status": item.status,
                     "created_at": item.created_at,
                     "updated_at": item.updated_at,
+                    "labels": item.labels,
                 }
                 for item in sessions
             ]
@@ -882,6 +968,7 @@ class ProjectService:
                 "target": session.target.name,
                 "title": session.title,
                 "status": session.status,
+                "labels": session.labels,
                 "notes": [
                     {"content": note.content, "created_at": note.created_at}
                     for note in session.notes
@@ -896,6 +983,80 @@ class ProjectService:
                     for event in session.events
                 ],
             }
+
+    def prune_sessions(
+        self,
+        *,
+        before: datetime,
+        target_name: str | None = None,
+        statuses: tuple[str, ...] = ("closed",),
+    ) -> list[int]:
+        if before.tzinfo is None:
+            raise ValueError("Retention cutoff must include a timezone")
+        if not statuses or any(status not in {"paused", "closed"} for status in statuses):
+            raise ValueError("Retention can only remove paused or closed sessions")
+        cutoff = before.astimezone(UTC).replace(tzinfo=None)
+        with self.session() as db_session:
+            statement = select(InvestigationSession).where(
+                InvestigationSession.status.in_(statuses),
+                InvestigationSession.updated_at < cutoff,
+            )
+            if target_name is not None:
+                statement = statement.join(Target).where(Target.name == target_name)
+            sessions = db_session.execute(statement).scalars().all()
+            removed_ids = [item.id for item in sessions]
+            for item in sessions:
+                for artifact_model in (
+                    Evidence,
+                    ToolExecution,
+                    Observation,
+                    Hypothesis,
+                    Finding,
+                ):
+                    db_session.execute(
+                        sa_update(artifact_model)
+                        .where(artifact_model.session_id == item.id)
+                        .values(session_id=None)
+                    )
+                db_session.execute(delete(Note).where(Note.session_id == item.id))
+                db_session.execute(delete(SessionEvent).where(SessionEvent.session_id == item.id))
+                for association in (
+                    finding_evidence,
+                    finding_executions,
+                    finding_hypotheses,
+                    finding_observations,
+                ):
+                    db_session.execute(
+                        delete(association).where(
+                            association.c.finding_id.in_(
+                                select(Finding.id).where(Finding.session_id == item.id)
+                            )
+                        )
+                    )
+                db_session.delete(item)
+            return removed_ids
+
+    def search_corpus(
+        self,
+        *,
+        target_name: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, object]]:
+        if not 1 <= limit <= 10000:
+            raise ValueError("Search corpus limit must be between 1 and 10000")
+        statement = (
+            "SELECT artifact_type, artifact_id, target_name, session_id, status, severity, "
+            "title, body FROM search_documents"
+        )
+        params: dict[str, object] = {"limit": limit}
+        if target_name is not None:
+            statement += " WHERE target_name = :target_name"
+            params["target_name"] = target_name
+        statement += " ORDER BY id LIMIT :limit"
+        with self.session() as db_session:
+            return [
+                dict(row) for row in db_session.execute(text(statement), params).mappings().all()
+            ]
 
     def set_session_status(self, session_id: int, *, status: str) -> None:
         if status not in {"active", "paused", "closed"}:

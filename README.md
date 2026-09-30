@@ -189,7 +189,14 @@ bbai session note "Revisar comportamiento con una cuenta de bajo privilegio"
 bbai session pause
 bbai session resume 1
 bbai session close
+bbai session labels 1 --label auth --label triage
+bbai session export 1 --output session.json
+bbai session prune --older-than-days 90
+bbai session prune --older-than-days 90 --apply
 ```
+
+La retención muestra una vista previa por defecto y solo puede eliminar sesiones cerradas
+o pausadas; las evidencias y demás artefactos se conservan.
 
 Los findings empiezan como borradores y solo se pueden aceptar o rechazar desde el flujo
 de revisión humana:
@@ -202,6 +209,9 @@ bbai finding show 1
 bbai report 1 --format markdown --output report.md
 bbai report --format json --output report.json
 ```
+
+Los informes Markdown pueden usar una plantilla local con placeholders como `$title`,
+`$target` y `$summary`, mediante `bbai report --template template.md`.
 
 Los informes incluyen solo findings aceptados/reportados de forma predeterminada.
 `--include-drafts` permite exportar explícitamente estados no aceptados; los secretos
@@ -343,6 +353,30 @@ devuelve un código de salida distinto de cero. `bbai search` consulta el índic
 FTS5 de targets, evidencias, observaciones, hipótesis, findings, notas y eventos de
 sesión. Usa `--target`, `--session`, `--type`, `--status` y `--severity` para acotar la
 búsqueda, o `--rebuild` para recrear el índice.
+`bbai search --semantic` enables experimental local Ollama embedding ranking.
+`bbai search-evaluate dataset.json --strategy fts` (or `semantic`) reports precision@k,
+recall@k, reciprocal rank, and latency for labeled query datasets.
+`bbai metrics` summarizes context size and tool duration; Ollama usage/cost is not
+persisted and is therefore not estimated.
+
+Import Nuclei JSONL or SARIF output as draft findings with
+`bbai import-results results.jsonl --format nuclei-jsonl`; URL locations outside the
+configured scope are skipped. Portable database workspaces can be moved with
+`bbai workspace export portable.bbai.zip` and `bbai workspace import portable.bbai.zip`.
+Importing over an existing database requires `--replace` and first preserves a backup.
+Portable archives exclude `.bbai.toml` and system keyring secrets.
+
+Authentication profiles support roles, optional expiration, confirmed cookie-file import,
+and scoped response comparison with separately approved read-only GET requests:
+
+```bash
+bbai auth profile-add anonymous --role anonymous --expires-in-hours 8
+bbai auth cookie-import normal-user cookies.txt --role user
+bbai auth compare --url https://example.com/account --left anonymous --right normal-user
+```
+
+Comparison uses status, content type, and a response-body hash; it does not persist the
+body. OAuth/SSO and refresh tokens remain future work.
 
 ## Design principles
 
@@ -356,5 +390,5 @@ búsqueda, o `--rebuild` para recrear el índice.
 
 This is an operational local-first MVP, not an autonomous exploitation agent. Tool
 execution remains scoped, bounded, auditable, and subject to human approval. See
-[ROADMAP.md](ROADMAP.md) for advanced authentication, supervised workflows, frontend,
-backup/restore, and further hardening.
+[ROADMAP.md](ROADMAP.md) for proposed OAuth/SSO, supervised workflows, frontend, and
+persistent semantic RAG.

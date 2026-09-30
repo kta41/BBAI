@@ -124,6 +124,7 @@ class AuthProfile(Base):
     target_id: Mapped[int] = mapped_column(ForeignKey("targets.id"), nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     auth_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    role: Mapped[str] = mapped_column(String(30), default="custom", nullable=False)
     secret_ref: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
@@ -203,6 +204,7 @@ class Session(Base):
     target_id: Mapped[int] = mapped_column(ForeignKey("targets.id"), nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
+    labels: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
 

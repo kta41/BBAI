@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import math
 import subprocess
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from string import Template
 from typing import Annotated
 
 import httpx
@@ -25,9 +28,12 @@ from bbai.context.builder import ContextInput, build_context
 from bbai.db import init_db
 from bbai.diagnostics import run_diagnostics
 from bbai.filesystem import atomic_write_private
+from bbai.importers import MAX_IMPORT_BYTES, parse_nuclei_jsonl, parse_sarif
 from bbai.llm.provider import OllamaProvider
-from bbai.services.project_service import FindingData, ProjectService
+from bbai.semantic import rank_semantically
+from bbai.services.project_service import FindingData, ImportedFindingInput, ProjectService
 from bbai.setup_wizard import run_setup_wizard
+from bbai.tools.base import HttpInspectTool
 from bbai.tools.policy import ScopePolicy
 from bbai.tools.registry import (
     build_tools,
@@ -35,6 +41,7 @@ from bbai.tools.registry import (
     tool_definitions,
     tool_security_metadata,
 )
+from bbai.workspace_archive import export_workspace, import_workspace
 
 app = typer.Typer(help="Local research assistant for Bug Bounty investigations with Ollama.")
 
@@ -47,6 +54,7 @@ _finding_app = typer.Typer(help="Manage findings.")
 _session_app = typer.Typer(help="Manage investigation sessions.")
 _tool_app = typer.Typer(help="Inspect available tool integrations.")
 _auth_app = typer.Typer(help="Manage target authentication profiles.")
+_workspace_app = typer.Typer(help="Export and import portable workspaces.")
 app.add_typer(_target_app, name="target")
 app.add_typer(_evidence_app, name="evidence")
 app.add_typer(_observation_app, name="observation")
@@ -55,6 +63,7 @@ app.add_typer(_finding_app, name="finding")
 app.add_typer(_session_app, name="session")
 app.add_typer(_tool_app, name="tool")
 app.add_typer(_auth_app, name="auth")
+app.add_typer(_workspace_app, name="workspace")
 
 
 @app.callback()
@@ -141,8 +150,13 @@ def use_target(name: str = typer.Argument(..., help="Target to make active.")) -
 @_auth_app.command("profile-add")
 def add_auth_profile(
     name: str = typer.Argument(..., help="Profile name, e.g. normal-user."),
-    auth_type: str = typer.Option(..., "--type", help="bearer, cookie, api_key or headers."),
+    auth_type: str = typer.Option("headers", "--type", help="bearer, cookie, api_key or headers."),
     target_name: str = typer.Option("", "--target", "-t", help="Target override."),
+    role: str = typer.Option("custom", "--role", help="anonymous, user, admin, or custom."),
+    expires_at: str = typer.Option("", "--expires-at", help="ISO-8601 expiration with timezone."),
+    expires_in_hours: float | None = typer.Option(
+        None, "--expires-in-hours", min=0.01, help="Expire after this many hours."
+    ),
 ) -> None:
     settings = Settings.load(Path.cwd())
     selected_target = target_name or settings.active_target
@@ -155,7 +169,37 @@ def add_auth_profile(
             f"Unsupported auth type. Choose one of: {', '.join(sorted(allowed_types))}", err=True
         )
         raise typer.Exit(code=1)
-    if auth_type == "bearer":
+    if role not in {"anonymous", "user", "admin", "custom"}:
+        typer.echo("Role must be anonymous, user, admin, or custom.", err=True)
+        raise typer.Exit(code=2)
+    if expires_at and expires_in_hours is not None:
+        typer.echo("Choose either --expires-at or --expires-in-hours.", err=True)
+        raise typer.Exit(code=2)
+    try:
+        expiration = datetime.fromisoformat(expires_at) if expires_at else None
+    except ValueError as exc:
+        typer.echo("--expires-at must be an ISO-8601 timestamp.", err=True)
+        raise typer.Exit(code=2) from exc
+    if expiration is not None and expiration.tzinfo is None:
+        typer.echo("--expires-at must include a timezone.", err=True)
+        raise typer.Exit(code=2)
+    if expires_in_hours is not None:
+        if not math.isfinite(expires_in_hours):
+            typer.echo("--expires-in-hours must be a finite number.", err=True)
+            raise typer.Exit(code=2)
+        expiration = datetime.now(UTC) + timedelta(hours=expires_in_hours)
+    service = ProjectService(str(settings.db_path))
+    if service.get_target(selected_target) is None:
+        typer.echo(f"Target '{selected_target}' does not exist.", err=True)
+        raise typer.Exit(code=1)
+    if service.auth_profile_exists(target_name=selected_target, name=name):
+        typer.echo(
+            f"Authentication profile '{name}' already exists for '{selected_target}'.", err=True
+        )
+        raise typer.Exit(code=1)
+    if role == "anonymous":
+        payload: dict[str, str] = {}
+    elif auth_type == "bearer":
         payload = {"token": typer.prompt("Bearer token", hide_input=True)}
     elif auth_type == "cookie":
         payload = {"cookie": typer.prompt("Cookie header value", hide_input=True)}
@@ -177,31 +221,36 @@ def add_auth_profile(
             typer.echo("Headers JSON must be an object with string keys and values.", err=True)
             raise typer.Exit(code=1)
         payload = parsed
-    service = ProjectService(str(settings.db_path))
     secret_ref = f"{selected_target}/{name}"
     store = KeyringSecretStore()
-    try:
-        store.set(secret_ref, payload)
-    except (KeyringError, OSError, ValueError) as exc:
-        typer.echo(f"Unable to store authentication secret in the system keyring: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
+    if role != "anonymous":
+        try:
+            store.set(secret_ref, payload)
+        except (KeyringError, OSError, ValueError) as exc:
+            typer.echo(
+                f"Unable to store authentication secret in the system keyring: {exc}", err=True
+            )
+            raise typer.Exit(code=1) from exc
     try:
         profile_id = service.add_auth_profile(
             target_name=selected_target,
             name=name,
             auth_type=auth_type,
             secret_ref=secret_ref,
+            role=role,
+            expires_at=expiration,
         )
     except (SQLAlchemyError, ValueError) as exc:
-        try:
-            store.delete(secret_ref)
-        except (KeyringError, OSError) as cleanup_error:
-            typer.echo(
-                "Unable to save authentication profile and unable to remove the "
-                f"orphaned keyring entry: {cleanup_error}",
-                err=True,
-            )
-            raise typer.Exit(code=1) from cleanup_error
+        if role != "anonymous":
+            try:
+                store.delete(secret_ref)
+            except (KeyringError, OSError) as cleanup_error:
+                typer.echo(
+                    "Unable to save authentication profile and unable to remove the "
+                    f"orphaned keyring entry: {cleanup_error}",
+                    err=True,
+                )
+                raise typer.Exit(code=1) from cleanup_error
         typer.echo(f"Unable to save authentication profile: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(f"Authentication profile A-{profile_id:03d} '{name}' added to '{selected_target}'")
@@ -221,7 +270,181 @@ def list_auth_profiles(
         typer.echo("No authentication profiles recorded.")
         return
     for profile in profiles:
-        typer.echo(f"- A-{profile['id']:03d} {profile['name']} [{profile['auth_type']}]")
+        expiration = profile["expires_at"]
+        if expiration is not None and not isinstance(expiration, datetime):
+            raise RuntimeError("Authentication profile has an invalid expiration value.")
+        expiry_label = f", expires {expiration.isoformat()}" if expiration else ""
+        typer.echo(
+            f"- A-{profile['id']:03d} {profile['name']} "
+            f"[{profile['role']}, {profile['auth_type']}{expiry_label}]"
+        )
+
+
+@_auth_app.command("cookie-import")
+def import_cookie_profile(
+    name: str = typer.Argument(..., help="Name for the imported cookie profile."),
+    cookie_file: Path = typer.Argument(  # noqa: B008
+        ..., help="File containing a Cookie header value."
+    ),
+    target_name: str = typer.Option("", "--target", "-t"),
+    role: str = typer.Option("user", "--role", help="user, admin, or custom."),
+    expires_at: str = typer.Option("", "--expires-at", help="ISO-8601 expiration with timezone."),
+) -> None:
+    settings = Settings.load(Path.cwd())
+    selected_target = target_name or settings.active_target
+    if not selected_target:
+        typer.echo("Select a target or pass --target.", err=True)
+        raise typer.Exit(code=1)
+    if role not in {"user", "admin", "custom"}:
+        typer.echo("Cookie profile role must be user, admin, or custom.", err=True)
+        raise typer.Exit(code=2)
+    service = ProjectService(str(settings.db_path))
+    if service.get_target(selected_target) is None:
+        typer.echo(f"Target '{selected_target}' does not exist.", err=True)
+        raise typer.Exit(code=1)
+    if service.auth_profile_exists(target_name=selected_target, name=name):
+        typer.echo(
+            f"Authentication profile '{name}' already exists for '{selected_target}'.", err=True
+        )
+        raise typer.Exit(code=1)
+    try:
+        if cookie_file.stat().st_size > 64 * 1024:
+            raise ValueError("Cookie files are limited to 64 KiB")
+        expiration = datetime.fromisoformat(expires_at) if expires_at else None
+        if expiration is not None and expiration.tzinfo is None:
+            raise ValueError("Expiration must include a timezone")
+        cookie = cookie_file.expanduser().read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError, ValueError) as exc:
+        typer.echo(f"Unable to read cookie file or expiration: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    if cookie.lower().startswith("cookie:"):
+        cookie = cookie.split(":", 1)[1].strip()
+    if not cookie or "\n" in cookie or "\r" in cookie:
+        typer.echo("Cookie file must contain one non-empty Cookie header value.", err=True)
+        raise typer.Exit(code=2)
+    if not typer.confirm(
+        "Import this cookie into the system keyring? The file will not be deleted.",
+        default=False,
+    ):
+        typer.echo("Cookie import cancelled.")
+        return
+    secret_ref = f"{selected_target}/{name}"
+    store = KeyringSecretStore()
+    try:
+        store.set(secret_ref, {"cookie": cookie})
+        profile_id = service.add_auth_profile(
+            target_name=selected_target,
+            name=name,
+            auth_type="cookie",
+            secret_ref=secret_ref,
+            role=role,
+            expires_at=expiration,
+        )
+    except (KeyringError, OSError, SQLAlchemyError, ValueError) as exc:
+        try:
+            store.delete(secret_ref)
+        except (KeyringError, OSError) as cleanup_error:
+            typer.echo(f"Cookie import failed; keyring cleanup failed: {cleanup_error}", err=True)
+            raise typer.Exit(code=1) from cleanup_error
+        typer.echo(f"Cookie import failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        f"Authentication profile A-{profile_id:03d} imported; cookie value was not displayed."
+    )
+
+
+@_auth_app.command("compare")
+def compare_auth_profiles(
+    url: str = typer.Option(..., "--url", help="In-scope URL for read-only GET requests."),
+    left_name: str = typer.Option(..., "--left", help="First auth profile name."),
+    right_name: str = typer.Option(..., "--right", help="Second auth profile name."),
+    target_name: str = typer.Option("", "--target", "-t"),
+) -> None:
+    settings = Settings.load(Path.cwd())
+    selected_target = target_name or settings.active_target
+    if not selected_target:
+        typer.echo("Select a target or pass --target.", err=True)
+        raise typer.Exit(code=1)
+    service = ProjectService(str(settings.db_path))
+    target = service.get_target(selected_target)
+    if target is None or not target["scope"]:
+        typer.echo("Target must exist and have an explicit scope.", err=True)
+        raise typer.Exit(code=1)
+    profiles: list[AuthProfile] = []
+    for name in (left_name, right_name):
+        data = service.get_auth_profile(target_name=selected_target, name=name)
+        if data is None:
+            typer.echo(f"Authentication profile '{name}' does not exist.", err=True)
+            raise typer.Exit(code=1)
+        expiration = data["expires_at"]
+        profiles.append(
+            AuthProfile(
+                name=str(data["name"]),
+                auth_type=str(data["auth_type"]),
+                secret_ref=str(data["secret_ref"]),
+                expires_at=expiration if isinstance(expiration, datetime) else None,
+                role=str(data["role"]),
+            )
+        )
+    contexts = []
+    try:
+        store = KeyringSecretStore()
+        contexts = [resolve_auth(profile, store) for profile in profiles]
+    except (KeyringError, ValueError) as exc:
+        typer.echo(f"Unable to resolve authentication profile: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    fingerprints: list[tuple[int, str, str]] = []
+    for profile, context in zip(profiles, contexts, strict=True):
+        if not typer.confirm(
+            f"Authorize one read-only GET to the scoped URL using role '{profile.role}'?",
+            default=False,
+        ):
+            typer.echo("Comparison cancelled; both requests must be approved.", err=True)
+            raise typer.Exit(code=1)
+        try:
+            response = HttpInspectTool(
+                scope=str(target["scope"]),
+                timeout_seconds=min(settings.ollama.timeout_seconds, 15),
+                auth=context,
+            ).execute(url=url)
+        except (httpx.HTTPError, TypeError, ValueError) as exc:
+            typer.echo(f"Comparison request for role '{profile.role}' failed: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        status_line = next(
+            (line for line in response.splitlines() if line.startswith("STATUS:")),
+            None,
+        )
+        if status_line is None or "BODY:\n" not in response:
+            typer.echo(
+                f"Comparison request for role '{profile.role}' returned an unrecognized response.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        try:
+            status_code = int(status_line.split(":", 1)[1].strip())
+        except ValueError as exc:
+            typer.echo(
+                f"Comparison request for role '{profile.role}' returned an invalid HTTP status.",
+                err=True,
+            )
+            raise typer.Exit(code=1) from exc
+        body = response.split("BODY:\n", 1)[1]
+        content_type = next(
+            (
+                line.split("content-type", 1)[1].strip(" :,'\"")
+                for line in response.splitlines()
+                if "content-type" in line.lower()
+            ),
+            "",
+        )
+        fingerprints.append((status_code, content_type, hashlib.sha256(body.encode()).hexdigest()))
+    typer.echo(f"{profiles[0].role}: HTTP {fingerprints[0][0]}")
+    typer.echo(f"{profiles[1].role}: HTTP {fingerprints[1][0]}")
+    typer.echo(
+        "Responses differ."
+        if fingerprints[0] != fingerprints[1]
+        else "Responses have the same status, content type, and body digest."
+    )
 
 
 @_auth_app.command("revoke")
@@ -335,6 +558,9 @@ def search_artifacts(
     severity: str = typer.Option("", "--severity", help="Filter findings by severity."),
     limit: int = typer.Option(20, "--limit", min=1, max=100),
     rebuild: bool = typer.Option(False, "--rebuild", help="Rebuild the full-text index."),
+    semantic: bool = typer.Option(
+        False, "--semantic", help="Rank local artifacts with Ollama embeddings."
+    ),
 ) -> None:
     settings = Settings.load(Path.cwd())
     service = ProjectService(str(settings.db_path))
@@ -347,17 +573,41 @@ def search_artifacts(
         typer.echo("Provide a query or use --rebuild.", err=True)
         raise typer.Exit(code=2)
     try:
-        results = service.search_artifacts(
-            query,
-            target_name=target_name or None,
-            artifact_type=artifact_type or None,
-            session_id=session_id,
-            status=status or None,
-            severity=severity or None,
-            limit=limit,
-        )
-    except ValueError as exc:
-        typer.echo(str(exc), err=True)
+        if semantic:
+            corpus = service.search_corpus(target_name=target_name or None)
+            ranked = rank_semantically(
+                query,
+                corpus,
+                base_url=settings.ollama.base_url,
+                model=settings.ollama.default_model,
+                timeout_seconds=settings.ollama.timeout_seconds,
+            )
+            results = [
+                {
+                    **item,
+                    "type": item["artifact_type"],
+                    "id": item["artifact_id"],
+                    "target": item["target_name"],
+                    "snippet": str(item["body"])[:180],
+                }
+                for item in ranked
+                if (not artifact_type or item["artifact_type"] == artifact_type)
+                and (session_id is None or item["session_id"] == session_id)
+                and (not status or item["status"] == status)
+                and (not severity or item["severity"] == severity)
+            ][:limit]
+        else:
+            results = service.search_artifacts(
+                query,
+                target_name=target_name or None,
+                artifact_type=artifact_type or None,
+                session_id=session_id,
+                status=status or None,
+                severity=severity or None,
+                limit=limit,
+            )
+    except (ValueError, RuntimeError) as exc:
+        typer.echo(f"Search failed: {exc}", err=True)
         raise typer.Exit(code=2) from exc
     if not results:
         typer.echo("No matching artifacts.")
@@ -374,6 +624,108 @@ def search_artifacts(
             f"{result['title']} {f'({classification})' if classification else ''}\n"
             f"  {result['snippet']}"
         )
+
+
+@app.command("search-evaluate")
+def evaluate_search(
+    dataset_path: Path = typer.Argument(  # noqa: B008
+        ..., help="JSON dataset with query/relevant artifact IDs."
+    ),
+    strategy: str = typer.Option("fts", "--strategy", help="fts or semantic."),
+    k: int = typer.Option(5, "--k", min=1, max=100),
+) -> None:
+    if strategy not in {"fts", "semantic"}:
+        typer.echo("--strategy must be 'fts' or 'semantic'.", err=True)
+        raise typer.Exit(code=2)
+    try:
+        if dataset_path.stat().st_size > 4 * 1024 * 1024:
+            raise ValueError("Evaluation datasets are limited to 4 MiB")
+        dataset = json.loads(dataset_path.read_text(encoding="utf-8"))
+        if not isinstance(dataset, list) or not dataset:
+            raise ValueError("Evaluation dataset must be a non-empty JSON array")
+        settings = Settings.load(Path.cwd())
+        service = ProjectService(str(settings.db_path))
+        corpus = service.search_corpus(limit=10000) if strategy == "semantic" else []
+        metrics: list[dict[str, float]] = []
+        for case in dataset:
+            if (
+                not isinstance(case, dict)
+                or not isinstance(case.get("query"), str)
+                or not isinstance(case.get("relevant"), list)
+            ):
+                raise ValueError(  # noqa: TRY004
+                    "Each case must contain a query string and relevant ID list"
+                )
+            started = time.perf_counter()
+            if strategy == "semantic":
+                ranked = rank_semantically(
+                    case["query"],
+                    corpus,
+                    base_url=settings.ollama.base_url,
+                    model=settings.ollama.default_model,
+                    timeout_seconds=settings.ollama.timeout_seconds,
+                )
+                keys = [(item["artifact_type"], item["artifact_id"]) for item in ranked[:k]]
+            else:
+                ranked = service.search_artifacts(case["query"], limit=100)
+                keys = [(item["type"], item["id"]) for item in ranked[:k]]
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            relevant = {
+                (item.get("type"), item.get("id"))
+                for item in case["relevant"]
+                if isinstance(item, dict)
+            }
+            hits = [index for index, key in enumerate(keys, start=1) if key in relevant]
+            metrics.append(
+                {
+                    "precision_at_k": len(hits) / k,
+                    "recall_at_k": len(set(keys) & relevant) / len(relevant) if relevant else 0.0,
+                    "reciprocal_rank": 1 / hits[0] if hits else 0.0,
+                    "latency_ms": elapsed_ms,
+                }
+            )
+        averages = {
+            key: sum(item[key] for item in metrics) / len(metrics)
+            for key in ("precision_at_k", "recall_at_k", "reciprocal_rank", "latency_ms")
+        }
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError, RuntimeError) as exc:
+        typer.echo(f"Search evaluation failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        json.dumps({"strategy": strategy, "k": k, "queries": len(metrics), **averages}, indent=2)
+    )
+
+
+@app.command("metrics")
+def show_metrics(
+    target_name: str = typer.Option("", "--target", "-t", help="Target override."),
+) -> None:
+    settings = Settings.load(Path.cwd())
+    selected_target = target_name or settings.active_target
+    if not selected_target:
+        typer.echo("Select a target or pass --target.", err=True)
+        raise typer.Exit(code=1)
+    service = ProjectService(str(settings.db_path))
+    try:
+        context = service.get_context_data(target_name=selected_target)
+        executions = service.list_tool_executions(target_name=selected_target)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    context_chars = sum(len(value) for value in context.values())
+    durations = [
+        duration for item in executions if isinstance(duration := item.get("duration_ms"), int)
+    ]
+    summary = {
+        "target": selected_target,
+        "context_characters": context_chars,
+        "estimated_context_tokens": math.ceil(context_chars / 4),
+        "tool_executions": len(executions),
+        "tool_duration_ms_total": sum(durations),
+        "tool_duration_ms_average": round(sum(durations) / len(durations), 2) if durations else 0,
+        "model_tokens_and_cost": "unavailable: Ollama usage is not persisted",
+    }
+    typer.echo(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
 @_session_app.command("create")
@@ -400,6 +752,24 @@ def create_session(
     typer.echo(f"Session S-{session_id:03d} created and active")
 
 
+@_session_app.command("labels")
+def set_session_labels(
+    session_id: int = typer.Argument(..., help="Numeric session ID."),
+    labels: list[str] = typer.Option(  # noqa: B008
+        [], "--label", help="Label to assign; repeat as needed."
+    ),
+) -> None:
+    try:
+        ProjectService(str(Settings.load(Path.cwd()).db_path)).update_session_labels(
+            session_id,
+            labels,
+        )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Labels updated for S-{session_id:03d}")
+
+
 @_session_app.command("list")
 def list_sessions(
     target_name: str = typer.Option("", "--target", "-t", help="Target override."),
@@ -419,7 +789,10 @@ def list_sessions(
         return
     for session in sessions:
         active = " (active)" if session["id"] == settings.active_session_id else ""
-        typer.echo(f"- S-{session['id']:03d} [{session['status']}] {session['title']}{active}")
+        labels = f" ({', '.join(session['labels'])})" if session["labels"] else ""
+        typer.echo(
+            f"- S-{session['id']:03d} [{session['status']}] {session['title']}{labels}{active}"
+        )
 
 
 @_session_app.command("show")
@@ -438,12 +811,71 @@ def show_session(
         raise typer.Exit(code=1) from exc
     typer.echo(
         f"S-{session['id']:03d} {session['title']}\n"
-        f"Target: {session['target']} | Status: {session['status']}"
+        f"Target: {session['target']} | Status: {session['status']}\n"
+        f"Labels: {', '.join(session['labels']) or 'none'}"
     )
     for note in session["notes"]:
         typer.echo(f"[note] {note['content']}")
     for event in session["events"]:
         typer.echo(f"[{event['type']}] {event['content']}")
+
+
+@_session_app.command("export")
+def export_session(
+    session_id: int = typer.Argument(..., help="Numeric session ID."),
+    output_path: Path = typer.Option(  # noqa: B008
+        ..., "--output", "-o", help="Destination JSON file."
+    ),
+) -> None:
+    try:
+        data = ProjectService(str(Settings.load(Path.cwd()).db_path)).get_session(session_id)
+        output = json.dumps(data, ensure_ascii=False, indent=2, default=_json_default) + "\n"
+        atomic_write_private(output_path.expanduser().resolve(), output)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Unable to export session: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Session S-{session_id:03d} exported to {output_path.expanduser().resolve()}")
+
+
+@_session_app.command("prune")
+def prune_sessions(
+    older_than_days: int = typer.Option(..., "--older-than-days", min=1),
+    target_name: str = typer.Option("", "--target", "-t"),
+    status: str = typer.Option("closed", "--status", help="Only closed or paused sessions."),
+    apply: bool = typer.Option(False, "--apply", help="Delete the matching sessions."),
+) -> None:
+    if status not in {"closed", "paused"}:
+        typer.echo("Retention can only prune closed or paused sessions.", err=True)
+        raise typer.Exit(code=2)
+    settings = Settings.load(Path.cwd())
+    service = ProjectService(str(settings.db_path))
+    cutoff = datetime.now(UTC).replace(microsecond=0) - timedelta(days=older_than_days)
+    target_filter = target_name or settings.active_target
+    try:
+        sessions = service.list_sessions(target_name=target_filter) if target_filter else []
+        matching = [
+            session
+            for session in sessions
+            if session["status"] == status and session["updated_at"].replace(tzinfo=UTC) < cutoff
+        ]
+        if not target_filter:
+            typer.echo("Retention requires --target or an active target.", err=True)
+            raise typer.Exit(code=1)
+        if not apply:
+            typer.echo(
+                f"{len(matching)} {status} session(s) older than {older_than_days} days "
+                "match; rerun with --apply to delete them."
+            )
+            return
+        removed = service.prune_sessions(
+            before=cutoff,
+            target_name=target_filter,
+            statuses=(status,),
+        )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Pruned {len(removed)} session(s); linked research artifacts were retained.")
 
 
 @_session_app.command("resume")
@@ -884,6 +1316,7 @@ def investigate(
             auth_type=str(profile_data["auth_type"]),
             secret_ref=str(profile_data["secret_ref"]),
             expires_at=expires_at,
+            role=str(profile_data["role"]),
         )
         try:
             auth_context = resolve_auth(profile, KeyringSecretStore())
@@ -902,9 +1335,7 @@ def investigate(
     policy = ScopePolicy(
         allowed_tools=frozenset(tools),
         approval_required=False,
-        tool_approval_required={
-            name: tool.approval_required for name, tool in tools.items()
-        },
+        tool_approval_required={name: tool.approval_required for name, tool in tools.items()},
     )
     definitions = tool_definitions(tools)
     context = build_context(
@@ -1294,6 +1725,10 @@ def generate_report(
     output_path: Annotated[
         Path | None, typer.Option("--output", "-o", help="Write report to a file.")
     ] = None,
+    template_path: Annotated[
+        Path | None,
+        typer.Option("--template", help="Markdown template with $title/$summary/... placeholders."),
+    ] = None,
     include_drafts: bool = typer.Option(
         False, "--include-drafts", help="Explicitly include findings not yet accepted."
     ),
@@ -1301,6 +1736,9 @@ def generate_report(
     if output_format not in {"markdown", "json"}:
         typer.echo("Format must be 'markdown' or 'json'.", err=True)
         raise typer.Exit(code=1)
+    if template_path is not None and output_format != "markdown":
+        typer.echo("--template can only be used with Markdown output.", err=True)
+        raise typer.Exit(code=2)
     settings = Settings.load(Path.cwd())
     selected_target = target_name or settings.active_target
     service = ProjectService(str(settings.db_path))
@@ -1322,14 +1760,24 @@ def generate_report(
     try:
         for name in target_names:
             for profile in service.list_auth_profiles(target_name=name):
-                payload = store.get(str(profile["secret_ref"]))
-                secrets.extend(payload.values())
+                if profile["role"] != "anonymous":
+                    payload = store.get(str(profile["secret_ref"]))
+                    secrets.extend(payload.values())
     except (KeyringError, ValueError) as exc:
         typer.echo(f"Unable to verify report redaction: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     _redact_report_data(findings, secrets)
     if output_format == "json":
         rendered = json.dumps(findings, ensure_ascii=False, indent=2)
+    elif template_path is not None:
+        try:
+            template = Template(template_path.expanduser().read_text(encoding="utf-8"))
+            rendered = "\n\n---\n\n".join(
+                template.substitute(_report_template_values(finding)) for finding in findings
+            )
+        except (OSError, KeyError, ValueError) as exc:
+            typer.echo(f"Unable to render report template: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
     else:
         rendered = _render_markdown_report(findings)
     rendered = redact_secrets(rendered, secrets)
@@ -1343,6 +1791,110 @@ def generate_report(
         typer.echo(f"Report written to {output_path}")
     else:
         typer.echo(rendered)
+
+
+@_workspace_app.command("export")
+def export_workspace_command(
+    output_path: Path = typer.Argument(  # noqa: B008
+        ..., help="Destination .bbai.zip file."
+    ),
+) -> None:
+    settings = Settings.load(Path.cwd())
+    try:
+        archive = export_workspace(settings.db_path, output_path)
+    except BackupError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Workspace exported to {archive}")
+    typer.echo(
+        "The archive includes the SQLite database only; config and keyring secrets are excluded."
+    )
+
+
+@_workspace_app.command("import")
+def import_workspace_command(
+    archive_path: Path = typer.Argument(  # noqa: B008
+        ..., help="Portable workspace .bbai.zip archive."
+    ),
+    replace: bool = typer.Option(
+        False,
+        "--replace",
+        help="Replace the current database after preserving it as a pre-restore backup.",
+    ),
+) -> None:
+    settings = Settings.load(Path.cwd())
+    try:
+        database, previous = import_workspace(
+            archive_path,
+            settings.db_path,
+            replace_existing=replace,
+        )
+    except BackupError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Workspace database imported to {database}")
+    if previous is not None:
+        typer.echo(f"Previous database preserved at {previous}")
+    typer.echo("Configuration and system keyring secrets are not imported.")
+
+
+@app.command("import-results")
+def import_results(
+    input_path: Path = typer.Argument(  # noqa: B008
+        ..., help="Scanner output file."
+    ),
+    input_format: str = typer.Option(..., "--format", help="nuclei-jsonl or sarif."),
+    target_name: str = typer.Option("", "--target", "-t", help="Target override."),
+    session_id: int | None = typer.Option(None, "--session", help="Optional active session ID."),
+) -> None:
+    if input_format not in {"nuclei-jsonl", "sarif"}:
+        typer.echo("--format must be 'nuclei-jsonl' or 'sarif'.", err=True)
+        raise typer.Exit(code=2)
+    try:
+        if input_path.stat().st_size > MAX_IMPORT_BYTES:
+            raise ValueError("Import files are limited to 32 MiB")
+        content = input_path.read_text(encoding="utf-8")
+        settings = Settings.load(Path.cwd())
+        selected_target = target_name or settings.active_target
+        if not selected_target:
+            raise ValueError("Select a target with `bbai target use` or pass --target.")
+        service = ProjectService(str(settings.db_path))
+        target = service.get_target(selected_target)
+        if target is None:
+            raise ValueError(f"Target '{selected_target}' does not exist")
+        if not target["scope"]:
+            raise ValueError("Target must have an explicit scope before importing scanner results.")
+        imported = (
+            parse_nuclei_jsonl(content, str(target["scope"]))
+            if input_format == "nuclei-jsonl"
+            else parse_sarif(content, str(target["scope"]))
+        )
+        if session_id is not None:
+            session = service.get_session(session_id)
+            if session["target"] != selected_target or session["status"] != "active":
+                raise ValueError("Selected session must be active and belong to this target.")
+        imported_findings: list[ImportedFindingInput] = []
+        for result in imported:
+            location_text = f"\nLocation: {result.location}" if result.location else ""
+            imported_findings.append(
+                {
+                    "title": result.title,
+                    "summary": result.summary,
+                    "severity": result.severity,
+                    "evidence_source": f"import:{result.source}:{result.title}",
+                    "evidence_kind": f"scanner-{result.source}",
+                    "evidence_content": f"{result.summary}{location_text}",
+                }
+            )
+        service.add_imported_findings(
+            target_name=selected_target,
+            imported=imported_findings,
+            session_id=session_id,
+        )
+    except (OSError, UnicodeError, SQLAlchemyError, ValueError) as exc:
+        typer.echo(f"Unable to import scanner results: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Imported {len(imported)} scoped result(s) as draft findings.")
 
 
 def _redact_report_data(value: object, secrets: list[str]) -> None:
@@ -1431,6 +1983,32 @@ def _render_markdown_report(findings: list[FindingData]) -> str:
             )
             sections.append("")
     return "\n".join(sections).rstrip()
+
+
+def _report_template_values(finding: FindingData) -> dict[str, str]:
+    evidence = "\n\n".join(
+        f"- {item['source']} ({item['kind']}):\n  {item['content']}" for item in finding["evidence"]
+    )
+    return {
+        "id": str(finding["id"]),
+        "target": str(finding["target"]),
+        "title": str(finding["title"]),
+        "summary": str(finding["summary"]),
+        "severity": str(finding["severity"]),
+        "confidence": str(finding["confidence"]),
+        "impact": str(finding["impact"]),
+        "reproduction": str(finding["reproduction"]),
+        "remediation": str(finding["remediation"]),
+        "status": str(finding["status"]),
+        "session": str(finding["session_title"] or ""),
+        "evidence": evidence,
+    }
+
+
+def _json_default(value: object) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 if __name__ == "__main__":

@@ -171,7 +171,14 @@ bbai session note "Revisar el comportamiento con una cuenta de bajo privilegio"
 bbai session pause
 bbai session resume 1
 bbai session close
+bbai session labels 1 --label auth --label triage
+bbai session export 1 --output session.json
+bbai session prune --older-than-days 90
+bbai session prune --older-than-days 90 --apply
 ```
+
+La retención es una vista previa por defecto y solo permite eliminar sesiones cerradas
+o pausadas; conserva sus evidencias y demás artefactos de investigación.
 
 Los findings comienzan como borradores y solo pueden aceptarse o rechazarse mediante
 revisión humana:
@@ -184,6 +191,9 @@ bbai finding show 1
 bbai report 1 --format markdown --output informe.md
 bbai report --format json --output informe.json
 ```
+
+Los informes Markdown admiten plantillas locales con placeholders como `$title`,
+`$target` y `$summary`, mediante `bbai report --template plantilla.md`.
 
 Por defecto, los informes incluyen únicamente findings aceptados o reportados.
 `--include-drafts` permite exportar explícitamente estados no aceptados. Antes de
@@ -237,12 +247,25 @@ estado, aprobación y duración; no incluye target, argumentos, salida ni creden
 No es un registro inviolable: un usuario con acceso al workspace puede modificarlo.
 
 `bbai doctor` revisa el workspace, SQLite/migraciones/FTS5, Ollama y el modelo
-configurado, el keyring, el target activo y los binarios opcionales. Las advertencias
+configurado, la disponibilidad del keyring, el target activo y los binarios opcionales. Las advertencias
 señalan dependencias opcionales o configuración ausente; un error de base de
 datos/diagnóstico devuelve un código distinto de cero. `bbai search` consulta el índice
 local FTS5 de targets, evidencias, observaciones, hipótesis, findings, notas y eventos
 de sesión. Se puede filtrar con `--target`, `--session`, `--type`, `--status` y
 `--severity`, o reconstruirlo con `--rebuild`.
+`bbai search --semantic` ofrece ranking experimental con embeddings locales de Ollama.
+`bbai search-evaluate dataset.json --strategy fts` (o `semantic`) calcula precision@k,
+recall@k, reciprocal rank y latencia sobre un dataset JSON de consultas etiquetadas.
+`bbai metrics` resume tamaño de contexto y duración de ejecuciones; Ollama no persiste
+uso de tokens/coste, por lo que ese dato no se estima.
+
+Se pueden importar resultados estructurados de Nuclei JSONL y SARIF como findings en
+borrador: `bbai import-results salida.jsonl --format nuclei-jsonl`. Los resultados con
+ubicaciones URL fuera del scope configurado se descartan. Para mover la base de
+investigación entre workspaces usa `bbai workspace export portable.bbai.zip` y
+`bbai workspace import portable.bbai.zip`; importar sobre una base existente requiere
+`--replace` y crea primero un backup. El archivo portable excluye `.bbai.toml` y los
+secretos del keyring.
 
 ## Evidencias, observaciones e hipótesis
 
@@ -281,8 +304,16 @@ bbai auth profile-add normal-user --type cookie
 bbai auth profile-add api-client --type bearer
 bbai auth profile-add partner --type api_key
 bbai auth profile-add custom --type headers
+bbai auth profile-add anon --role anonymous --expires-in-hours 8
 bbai auth list
 ```
+
+La expiración también puede definirse con `--expires-at` (ISO-8601 con zona horaria).
+Para importar cookies desde un archivo se requiere confirmación explícita:
+`bbai auth cookie-import normal-user cookies.txt --role user`. Para comparar dos perfiles
+se hacen dos GET de solo lectura a una URL en scope, cada uno con aprobación humana:
+`bbai auth compare --url https://example.com/account --left anon --right normal-user`.
+Se comparan estado HTTP, tipo de contenido y hash del cuerpo, sin guardar el cuerpo.
 
 Para utilizar un perfil:
 
@@ -301,8 +332,7 @@ bbai auth revoke normal-user
 ```
 
 Esta versión soporta `bearer`, `cookie`, `api_key` y `headers`. El login y MFA siguen
-siendo manuales; la importación de cookies desde navegador y OAuth/SSO quedan para una
-fase posterior. Los perfiles también se aplican a `ffuf` mediante headers y sus valores
+siendo manuales; OAuth/SSO y refresh tokens quedan para una fase posterior. Los perfiles también se aplican a `ffuf` mediante headers y sus valores
 se redactan en la salida persistida. Los perfiles también se aplican a `katana` y
 `nuclei` mediante headers. `gau` los usa solo para redactar valores y no envía
 credenciales al servicio de archivos históricos.
@@ -341,18 +371,21 @@ Ya están integrados:
 - findings con flujo de revisión humana;
 - sesiones persistidas y reanudables;
 - informes Markdown/JSON;
+- etiquetas, retención y exportación de sesiones;
+- plantillas Markdown para informes;
 - migraciones Alembic con adopción de workspaces existentes;
 - autenticación de `ffuf` con redacción de secretos;
 - búsqueda SQLite FTS5 y comando `bbai search`;
+- ranking semántico experimental y evaluación comparativa de búsqueda;
+- importación de resultados Nuclei JSONL y SARIF;
+- exportación/importación portable del workspace y métricas locales;
 - diagnóstico `bbai doctor`.
 
-Pendiente:
+Pendiente de decisión/propuesta:
 
-1. importación de cookies y OAuth/SSO;
-2. comparación entre perfiles de autenticación;
-3. clasificación de riesgo y más integraciones;
-4. autonomía supervisada y frontend (propuestas aún por aprobar);
-5. backup, restore, exportación/importación y hardening operativo.
+1. OAuth/SSO, refresh tokens y un almacén cifrado opt-in;
+2. autonomía supervisada y frontend;
+3. RAG/contexto semántico persistente y medición de coste LLM.
 
 Findings/revisión, sesiones persistidas, informes Markdown/JSON, migraciones Alembic y
 autenticación de `ffuf` ya están implementados. El detalle de tareas y criterios de salida

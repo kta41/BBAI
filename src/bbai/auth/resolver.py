@@ -7,8 +7,14 @@ from bbai.auth.store import SecretStore
 
 
 def resolve_auth(profile: AuthProfile, store: SecretStore) -> AuthContext:
-    if profile.expires_at is not None and profile.expires_at <= datetime.now(UTC):
-        raise ValueError(f"Authentication profile '{profile.name}' has expired")
+    if profile.expires_at is not None:
+        expiration = profile.expires_at
+        if expiration.tzinfo is None:
+            expiration = expiration.replace(tzinfo=UTC)
+        if expiration <= datetime.now(UTC):
+            raise ValueError(f"Authentication profile '{profile.name}' has expired")
+    if profile.role == "anonymous":
+        return AuthContext(profile, {}, ())
     secret = store.get(profile.secret_ref)
     auth_type = profile.auth_type
     if auth_type == "bearer":
