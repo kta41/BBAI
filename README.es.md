@@ -1,6 +1,8 @@
 # bbai
 
 > **Un espacio de investigación local y bajo control humano para equipos de Bug Bounty y Web Security.**
+>
+> **Estado: alpha.** El proyecto sigue evolucionando; las integraciones y sus garantías pueden cambiar.
 
 La investigación de seguridad suele estar repartida entre terminales, pestañas del
 navegador, notas, clientes HTTP, resultados de scanners y conversaciones aisladas con
@@ -26,6 +28,14 @@ revisión. No es un agente autónomo de explotación y nunca proporciona acceso 
 al shell para el LLM.
 
 [Read this README in English](README.md).
+
+Usa `bbai` y sus herramientas únicamente en sistemas propios o para los que tengas
+autorización explícita. Las comprobaciones de scope y las confirmaciones son salvaguardas,
+no sustituyen la autorización ni garantizan que se impida toda acción insegura.
+`gau`, `katana`, `nuclei` y las demás integraciones externas son herramientas separadas:
+verifica su comportamiento, versión, términos y las reglas del programa antes de usarlas.
+Las integraciones se han probado con mocks, no contra targets reales. Consulta
+[SECURITY.md](SECURITY.md) para reportar vulnerabilidades de forma responsable.
 
 ## Visión de producto
 
@@ -86,6 +96,10 @@ Consulta el plan detallado en [ROADMAP.md](ROADMAP.md).
 
 `uv` es opcional. El proyecto también funciona con las herramientas estándar de
 empaquetado de Python.
+
+## Licencia
+
+Publicado bajo la [licencia MIT](LICENSE).
 
 ## Inicio rápido
 

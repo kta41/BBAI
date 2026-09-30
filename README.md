@@ -1,6 +1,8 @@
 # bbai
 
 > **A local, human-controlled investigation workspace for Bug Bounty and Web Security teams.**
+>
+> **Status: alpha.** This project is evolving; integrations and safety behavior may change.
 
 Security research is often spread across terminals, browser tabs, notes, HTTP clients,
 scanner output, and disconnected AI conversations. `bbai` brings that workflow into one
@@ -22,6 +24,14 @@ execution limits, redacts secrets, and stores the result for review. It is not a
 autonomous exploitation agent and it never provides arbitrary shell access to the LLM.
 
 [Read this README in Spanish](README.es.md).
+
+Use `bbai` and its tools only against systems you own or are explicitly authorized to
+assess. Scope checks and approval prompts are safeguards, not a substitute for
+authorization or a guarantee that every unsafe action is prevented. The `gau`, `katana`,
+`nuclei`, and other external integrations are separate tools; verify their behavior,
+versions, terms, and target-program rules before use. The integrations have been tested
+with mocks, not validated against live targets. See [SECURITY.md](SECURITY.md) for
+responsible disclosure and reporting instructions.
 
 ## Product vision
 
@@ -79,6 +89,10 @@ This project uses:
 - mypy for static typing
 
 `uv` is a good optional tool for project management when available, but the project is intentionally compatible with standard Python packaging tools. This keeps setup reliable in environments where `uv` is not installed yet.
+
+## License
+
+Released under the [MIT License](LICENSE).
 
 ## Quick start
 
