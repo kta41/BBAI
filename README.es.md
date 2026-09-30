@@ -76,6 +76,7 @@ Consulta el plan detallado en [ROADMAP.md](ROADMAP.md).
 - Pydantic
 - HTTPX
 - SQLAlchemy
+- Alembic para migraciones SQLite versionadas
 - SQLite
 - keyring
 - pytest
@@ -132,6 +133,36 @@ Para probar tool calling sin ejecutar acciones:
 ```bash
 bbai investigate "Analiza el target" --dry-run
 ```
+
+## Findings, sesiones e informes
+
+Cada `investigate` crea una sesión activa si no hay una seleccionada. Las preguntas,
+respuestas, llamadas a herramientas y resultados quedan en el historial local:
+
+```bash
+bbai session list
+bbai session show
+bbai session note "Revisar el comportamiento con una cuenta de bajo privilegio"
+bbai session pause
+bbai session resume 1
+bbai session close
+```
+
+Los findings comienzan como borradores y solo pueden aceptarse o rechazarse mediante
+revisión humana:
+
+```bash
+bbai finding create "Exposición de debug" "Se devuelven metadatos internos" --severity medium --evidence 1
+bbai finding update 1 --status in_review
+bbai finding review 1 --decision accepted --note "Reproducido dos veces"
+bbai finding show 1
+bbai report 1 --format markdown --output informe.md
+bbai report --format json --output informe.json
+```
+
+Por defecto, los informes incluyen únicamente findings aceptados o reportados.
+`--include-drafts` permite exportar explícitamente estados no aceptados. Antes de
+mostrar o escribir el informe se redactan secretos de los perfiles activos del keyring.
 
 ## Herramientas y seguridad
 
@@ -205,7 +236,8 @@ bbai auth revoke normal-user
 
 Esta versión soporta `bearer`, `cookie`, `api_key` y `headers`. El login y MFA siguen
 siendo manuales; la importación de cookies desde navegador y OAuth/SSO quedan para una
-fase posterior.
+fase posterior. Los perfiles también se aplican a `ffuf` mediante headers y sus valores
+se redactan en la salida persistida.
 
 ## Principios
 
@@ -236,18 +268,25 @@ Ya están integrados:
 - redacción de secretos;
 - evidencias;
 - observaciones;
-- hipótesis.
+- hipótesis;
+- findings con flujo de revisión humana;
+- sesiones persistidas y reanudables;
+- informes Markdown/JSON;
+- migraciones Alembic con adopción de workspaces existentes;
+- autenticación de `ffuf` con redacción de secretos.
 
 Pendiente:
 
-1. findings completos y revisión humana;
-2. sesiones y notas;
-3. informes Markdown/JSON;
-4. migraciones Alembic;
-5. SQLite FTS5 y búsqueda;
-6. importación de cookies y OAuth/SSO;
-7. comparación entre perfiles de autenticación;
-8. nuevas herramientas con políticas específicas.
+1. SQLite FTS5 y búsqueda;
+2. importación de cookies y OAuth/SSO;
+3. comparación entre perfiles de autenticación;
+4. nuevas herramientas con políticas específicas;
+5. autonomía supervisada y frontend (propuestas aún por aprobar);
+6. backup, restore, exportación/importación y hardening operativo.
+
+Findings/revisión, sesiones persistidas, informes Markdown/JSON, migraciones Alembic y
+autenticación de `ffuf` ya están implementados. El detalle de tareas y criterios de salida
+está en [ROADMAP.md](ROADMAP.md).
 
 ## Calidad
 

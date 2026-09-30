@@ -40,11 +40,11 @@ Question
   → Report
 ```
 
-The current MVP already includes the core investigation loop, local Ollama tool calling,
-scope validation, four controlled tools, execution records, authenticated HTTP profiles,
-secret redaction, evidence persistence, observations, and hypotheses. The remaining
-roadmap focuses on completing findings, review workflows, reports, sessions, search, and
-more advanced integrations.
+The MVP includes the core investigation loop, local Ollama tool calling, scope validation,
+four controlled tools, authenticated HTTP profiles, redaction, evidence, observations,
+hypotheses, reviewed findings, resumable investigation sessions, and Markdown/JSON
+reporting. The remaining roadmap focuses on search, advanced authentication, additional
+integrations, and operational hardening.
 
 See the detailed plan in [ROADMAP.md](ROADMAP.md).
 
@@ -73,6 +73,7 @@ This project uses:
 - Pydantic for configuration and validation
 - HTTPX for HTTP client communication
 - SQLAlchemy for local SQLite persistence
+- Alembic for versioned SQLite migrations
 - pytest for tests
 - Ruff for linting
 - mypy for static typing
@@ -126,6 +127,7 @@ bbai evidence list
 bbai ask "¿Qué sabemos hasta ahora sobre este target?"
 bbai investigate "Comprueba la página principal y resume las cabeceras relevantes"
 bbai investigate "Analiza el target" --dry-run
+bbai session list
 bbai tool list
 bbai tool check
 bbai tool executions
@@ -133,8 +135,10 @@ bbai observation list
 bbai hypothesis list
 bbai analyze ./evidence/request.txt
 bbai finding list
-bbai finding review F-001
-bbai report F-001
+bbai finding create "Debug disclosure" "The response exposes debug metadata" --severity medium --evidence 1
+bbai finding update 1 --status in_review
+bbai finding review 1 --decision accepted --note "Verified manually"
+bbai report 1 --format markdown --output report.md
 ```
 
 El target activo se guarda en `.bbai.toml`, por lo que se mantiene entre sesiones y
@@ -147,6 +151,37 @@ ninguna acción. Cada intento se registra como ejecución con estado `dry_run`, 
 ```bash
 bbai tool executions
 ```
+
+## Findings, sesiones e informes
+
+Cada `investigate` crea una sesión activa si no hay ninguna seleccionada. La pregunta,
+respuesta, llamadas a herramientas y resultados quedan en el historial local:
+
+```bash
+bbai session list
+bbai session show
+bbai session note "Revisar comportamiento con una cuenta de bajo privilegio"
+bbai session pause
+bbai session resume 1
+bbai session close
+```
+
+Los findings empiezan como borradores y solo se pueden aceptar o rechazar desde el flujo
+de revisión humana:
+
+```bash
+bbai finding create "Debug disclosure" "Internal metadata is returned" --severity medium --evidence 1
+bbai finding update 1 --status in_review
+bbai finding review 1 --decision accepted --note "Reproduced twice"
+bbai finding show 1
+bbai report 1 --format markdown --output report.md
+bbai report --format json --output report.json
+```
+
+Los informes incluyen solo findings aceptados/reportados de forma predeterminada.
+`--include-drafts` permite exportar explícitamente estados no aceptados; los secretos
+almacenados en los perfiles activos del keyring se redactan antes de mostrar o escribir
+el informe.
 
 ## Evidencias
 
@@ -215,7 +250,8 @@ bbai auth revoke normal-user
 
 Esta primera versión soporta `bearer`, `cookie`, `api_key` y `headers`. La importación
 de cookies exportadas desde un navegador y los flujos OAuth/SSO se añadirán después; el
-login y MFA siguen siendo manuales.
+login y MFA siguen siendo manuales. Los perfiles se aplican también a `ffuf` mediante
+headers y sus valores se redactan en la salida persistida.
 
 ## Tool calling experimental
 

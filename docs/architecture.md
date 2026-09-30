@@ -65,7 +65,7 @@ This is the foundation for future semantic memory and RAG.
 
 ### Storage
 
-SQLite is the right default for the MVP because it is local, low-friction, and enough for structured workflows. SQLAlchemy gives a clean object model and keeps the logic easy to evolve without introducing a heavier stack.
+SQLite is the right default for the MVP because it is local, low-friction, and enough for structured workflows. SQLAlchemy provides the object model, and Alembic versions schema changes while adopting existing SQLite workspaces without replacing their data.
 
 ### Tools
 
@@ -93,11 +93,11 @@ The system should enforce the following principles:
 
 The next iterations can add:
 
-- persistent sessions and notes
-- semantic search and embeddings
-- tool calling with a policy gate
-- review workflows and report generation
-- more advanced context assembly from recon artifacts
+- SQLite FTS5 search and later semantic retrieval
+- more advanced authenticated-session handling
+- a supervised, checkpointed workflow engine
+- a local frontend that reuses the same domain services as the CLI
+- operational features such as backup, restore, and workspace portability
 
 ## Minimum viable architecture
 

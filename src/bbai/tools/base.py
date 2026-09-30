@@ -190,21 +190,29 @@ class FfufTool(Tool):
             raise ValueError(f"Wordlist not found: {wordlist_path}")
         if shutil.which("ffuf") is None:
             raise RuntimeError("ffuf is not installed or not available in PATH")
-        return run_external(
-            [
-                "ffuf",
-                "-u",
-                url,
-                "-w",
-                str(wordlist_path),
-                "-json",
-                "-noninteractive",
-                "-s",
-                "-maxtime",
-                str(self.timeout_seconds),
-            ],
+        command = [
+            "ffuf",
+            "-u",
+            url,
+            "-w",
+            str(wordlist_path),
+            "-json",
+            "-noninteractive",
+            "-s",
+            "-maxtime",
+            str(self.timeout_seconds),
+        ]
+        if self.auth is not None:
+            for name, value in self.auth.headers.items():
+                command.extend(["-H", f"{name}: {value}"])
+        output = run_external(
+            command,
             timeout_seconds=self.timeout_seconds + 5,
             max_output_chars=self.max_output_chars,
+        )
+        return redact_secrets(
+            output,
+            self.auth.secret_values if self.auth else (),
         )
 
 

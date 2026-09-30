@@ -5,9 +5,11 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Annotated
 
 import httpx
 import typer
+from keyring.errors import KeyringError
 
 from bbai.auth.models import AuthProfile
 from bbai.auth.redaction import redact_secrets
@@ -17,7 +19,7 @@ from bbai.config import Settings
 from bbai.context.builder import ContextInput, build_context
 from bbai.db import init_db
 from bbai.llm.provider import OllamaProvider
-from bbai.services.project_service import ProjectService
+from bbai.services.project_service import FindingData, ProjectService
 from bbai.tools.policy import ScopePolicy
 from bbai.tools.registry import build_tools, tool_availability, tool_definitions
 
@@ -29,6 +31,7 @@ _evidence_app = typer.Typer(help="Manage stored investigation evidence.")
 _observation_app = typer.Typer(help="Manage technical observations.")
 _hypothesis_app = typer.Typer(help="Manage investigation hypotheses.")
 _finding_app = typer.Typer(help="Manage findings.")
+_session_app = typer.Typer(help="Manage investigation sessions.")
 _tool_app = typer.Typer(help="Inspect available tool integrations.")
 _auth_app = typer.Typer(help="Manage target authentication profiles.")
 app.add_typer(_target_app, name="target")
@@ -36,6 +39,7 @@ app.add_typer(_evidence_app, name="evidence")
 app.add_typer(_observation_app, name="observation")
 app.add_typer(_hypothesis_app, name="hypothesis")
 app.add_typer(_finding_app, name="finding")
+app.add_typer(_session_app, name="session")
 app.add_typer(_tool_app, name="tool")
 app.add_typer(_auth_app, name="auth")
 
@@ -46,7 +50,11 @@ def main() -> None:
 
 
 @app.command("init")
-def init_project(project_root: str = typer.Option(".", "--project-root", "-p", help="Project directory to initialize.")) -> None:
+def init_project(
+    project_root: str = typer.Option(
+        ".", "--project-root", "-p", help="Project directory to initialize."
+    ),
+) -> None:
     root = Path(project_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     settings = Settings(project_root=root)
@@ -79,6 +87,8 @@ def use_target(name: str = typer.Argument(..., help="Target to make active.")) -
     except ValueError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
+    if settings.active_target != name:
+        settings.active_session_id = None
     settings.active_target = name
     settings.save()
     typer.echo(f"Active target: {name}")
@@ -97,7 +107,9 @@ def add_auth_profile(
         typer.echo("No target selected. Use 'bbai target use <name>' or pass --target.", err=True)
         raise typer.Exit(code=1)
     if auth_type not in allowed_types:
-        typer.echo(f"Unsupported auth type. Choose one of: {', '.join(sorted(allowed_types))}", err=True)
+        typer.echo(
+            f"Unsupported auth type. Choose one of: {', '.join(sorted(allowed_types))}", err=True
+        )
         raise typer.Exit(code=1)
     if auth_type == "bearer":
         payload = {"token": typer.prompt("Bearer token", hide_input=True)}
@@ -139,7 +151,9 @@ def add_auth_profile(
 
 
 @_auth_app.command("list")
-def list_auth_profiles(target_name: str = typer.Option("", "--target", "-t", help="Target override.")) -> None:
+def list_auth_profiles(
+    target_name: str = typer.Option("", "--target", "-t", help="Target override."),
+) -> None:
     settings = Settings.load(Path.cwd())
     selected_target = target_name or settings.active_target
     if not selected_target:
@@ -188,6 +202,152 @@ def status() -> None:
     typer.echo(f"Scope: {target['scope'] or 'Not specified'}")
 
 
+@_session_app.command("create")
+def create_session(
+    title: str = typer.Argument(..., help="Short investigation objective."),
+    target_name: str = typer.Option("", "--target", "-t", help="Target override."),
+) -> None:
+    settings = Settings.load(Path.cwd())
+    selected_target = target_name or settings.active_target
+    if not selected_target:
+        typer.echo("No target selected. Use 'bbai target use <name>' or pass --target.", err=True)
+        raise typer.Exit(code=1)
+    try:
+        session_id = ProjectService(str(settings.db_path)).create_session(
+            target_name=selected_target,
+            title=title,
+        )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    settings.active_target = selected_target
+    settings.active_session_id = session_id
+    settings.save()
+    typer.echo(f"Session S-{session_id:03d} created and active")
+
+
+@_session_app.command("list")
+def list_sessions(
+    target_name: str = typer.Option("", "--target", "-t", help="Target override."),
+) -> None:
+    settings = Settings.load(Path.cwd())
+    selected_target = target_name or settings.active_target
+    if not selected_target:
+        typer.echo("No target selected. Use 'bbai target use <name>' or pass --target.", err=True)
+        raise typer.Exit(code=1)
+    try:
+        sessions = ProjectService(str(settings.db_path)).list_sessions(target_name=selected_target)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    if not sessions:
+        typer.echo("No sessions recorded yet.")
+        return
+    for session in sessions:
+        active = " (active)" if session["id"] == settings.active_session_id else ""
+        typer.echo(f"- S-{session['id']:03d} [{session['status']}] {session['title']}{active}")
+
+
+@_session_app.command("show")
+def show_session(
+    session_id: int | None = typer.Argument(None, help="Numeric session ID."),
+) -> None:
+    settings = Settings.load(Path.cwd())
+    selected_id = session_id or settings.active_session_id
+    if selected_id is None:
+        typer.echo("No active session. Create or resume one first.", err=True)
+        raise typer.Exit(code=1)
+    try:
+        session = ProjectService(str(settings.db_path)).get_session(selected_id)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        f"S-{session['id']:03d} {session['title']}\n"
+        f"Target: {session['target']} | Status: {session['status']}"
+    )
+    for note in session["notes"]:
+        typer.echo(f"[note] {note['content']}")
+    for event in session["events"]:
+        typer.echo(f"[{event['type']}] {event['content']}")
+
+
+@_session_app.command("resume")
+def resume_session(session_id: int = typer.Argument(..., help="Numeric session ID.")) -> None:
+    settings = Settings.load(Path.cwd())
+    service = ProjectService(str(settings.db_path))
+    try:
+        service.set_session_status(session_id, status="active")
+        session = service.get_session(session_id)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    settings.active_target = str(session["target"])
+    settings.active_session_id = session_id
+    settings.save()
+    typer.echo(f"Session S-{session_id:03d} resumed and active")
+
+
+@_session_app.command("note")
+def add_session_note(
+    content: str = typer.Argument(..., help="Research note."),
+    session_id: int | None = typer.Option(None, "--session", help="Session ID override."),
+) -> None:
+    settings = Settings.load(Path.cwd())
+    selected_id = session_id or settings.active_session_id
+    if selected_id is None:
+        typer.echo("No active session. Create or resume one first.", err=True)
+        raise typer.Exit(code=1)
+    try:
+        note_id = ProjectService(str(settings.db_path)).add_session_note(
+            selected_id, content=content
+        )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Note N-{note_id:03d} added to S-{selected_id:03d}")
+
+
+@_session_app.command("pause")
+def pause_session(
+    session_id: int | None = typer.Argument(None, help="Numeric session ID."),
+) -> None:
+    settings = Settings.load(Path.cwd())
+    selected_id = session_id or settings.active_session_id
+    if selected_id is None:
+        typer.echo("No active session to pause.", err=True)
+        raise typer.Exit(code=1)
+    try:
+        ProjectService(str(settings.db_path)).set_session_status(selected_id, status="paused")
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    if settings.active_session_id == selected_id:
+        settings.active_session_id = None
+        settings.save()
+    typer.echo(f"Session S-{selected_id:03d} paused")
+
+
+@_session_app.command("close")
+def close_session(
+    session_id: int | None = typer.Argument(None, help="Numeric session ID."),
+) -> None:
+    settings = Settings.load(Path.cwd())
+    selected_id = session_id or settings.active_session_id
+    if selected_id is None:
+        typer.echo("No active session to close.", err=True)
+        raise typer.Exit(code=1)
+    try:
+        ProjectService(str(settings.db_path)).set_session_status(selected_id, status="closed")
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    if settings.active_session_id == selected_id:
+        settings.active_session_id = None
+        settings.save()
+    typer.echo(f"Session S-{selected_id:03d} closed")
+
+
 @_tool_app.command("list")
 def list_tools() -> None:
     for name, status_value in tool_availability().items():
@@ -206,7 +366,9 @@ def check_tools() -> None:
 
 
 @_tool_app.command("executions")
-def list_tool_executions(target_name: str = typer.Option("", "--target", "-t", help="Target override.")) -> None:
+def list_tool_executions(
+    target_name: str = typer.Option("", "--target", "-t", help="Target override."),
+) -> None:
     settings = Settings.load(Path.cwd())
     selected_target = target_name or settings.active_target
     if not selected_target:
@@ -247,6 +409,7 @@ def add_evidence(
             source=str(evidence_path),
             kind=kind,
             content=evidence_path.read_text(encoding="utf-8"),
+            session_id=settings.active_session_id,
         )
     except ValueError as exc:
         typer.echo(str(exc), err=True)
@@ -255,7 +418,9 @@ def add_evidence(
 
 
 @_evidence_app.command("list")
-def list_evidence(target_name: str = typer.Option("", "--target", "-t", help="Target override.")) -> None:
+def list_evidence(
+    target_name: str = typer.Option("", "--target", "-t", help="Target override."),
+) -> None:
     settings = Settings.load(Path.cwd())
     selected_target = target_name or settings.active_target
     if not selected_target:
@@ -275,7 +440,9 @@ def add_observation(
     summary: str = typer.Argument(..., help="Technical observation."),
     target_name: str = typer.Option("", "--target", "-t", help="Target override."),
     evidence_id: int | None = typer.Option(None, "--evidence", help="Evidence numeric ID."),
-    tool_execution_id: int | None = typer.Option(None, "--execution", help="Tool execution numeric ID."),
+    tool_execution_id: int | None = typer.Option(
+        None, "--execution", help="Tool execution numeric ID."
+    ),
 ) -> None:
     settings = Settings.load(Path.cwd())
     selected_target = target_name or settings.active_target
@@ -289,6 +456,7 @@ def add_observation(
             summary=summary,
             evidence_id=evidence_id,
             tool_execution_id=tool_execution_id,
+            session_id=settings.active_session_id,
         )
     except ValueError as exc:
         typer.echo(str(exc), err=True)
@@ -297,13 +465,17 @@ def add_observation(
 
 
 @_observation_app.command("list")
-def list_observations(target_name: str = typer.Option("", "--target", "-t", help="Target override.")) -> None:
+def list_observations(
+    target_name: str = typer.Option("", "--target", "-t", help="Target override."),
+) -> None:
     settings = Settings.load(Path.cwd())
     selected_target = target_name or settings.active_target
     if not selected_target:
         typer.echo("No target selected. Use 'bbai target use <name>' or pass --target.", err=True)
         raise typer.Exit(code=1)
-    observations = ProjectService(str(settings.db_path)).list_observations(target_name=selected_target)
+    observations = ProjectService(str(settings.db_path)).list_observations(
+        target_name=selected_target
+    )
     if not observations:
         typer.echo("No observations recorded yet.")
         return
@@ -318,7 +490,9 @@ def add_hypothesis(
     status: str = typer.Option("open", "--status"),
     confidence: str = typer.Option("unknown", "--confidence"),
     evidence_id: int | None = typer.Option(None, "--evidence", help="Evidence numeric ID."),
-    observation_id: int | None = typer.Option(None, "--observation", help="Observation numeric ID."),
+    observation_id: int | None = typer.Option(
+        None, "--observation", help="Observation numeric ID."
+    ),
 ) -> None:
     settings = Settings.load(Path.cwd())
     selected_target = target_name or settings.active_target
@@ -334,6 +508,7 @@ def add_hypothesis(
             confidence=confidence,
             evidence_id=evidence_id,
             observation_id=observation_id,
+            session_id=settings.active_session_id,
         )
     except ValueError as exc:
         typer.echo(str(exc), err=True)
@@ -342,7 +517,9 @@ def add_hypothesis(
 
 
 @_hypothesis_app.command("list")
-def list_hypotheses(target_name: str = typer.Option("", "--target", "-t", help="Target override.")) -> None:
+def list_hypotheses(
+    target_name: str = typer.Option("", "--target", "-t", help="Target override."),
+) -> None:
     settings = Settings.load(Path.cwd())
     selected_target = target_name or settings.active_target
     if not selected_target:
@@ -390,7 +567,9 @@ def list_targets() -> None:
 @app.command("ask")
 def ask_question(
     question: str = typer.Argument(..., help="The question to send to the local model."),
-    target_name: str = typer.Option("", "--target", "-t", help="Optional target name to include in the context."),
+    target_name: str = typer.Option(
+        "", "--target", "-t", help="Optional target name to include in the context."
+    ),
     model: str | None = typer.Option(None, "--model", "-m", help="Optional model name override."),
 ) -> None:
     settings = Settings.load(Path.cwd())
@@ -432,10 +611,16 @@ def ask_question(
         evidence=context_data["evidence"],
         question=question,
     )
-    prompt = build_context(payload)
+    prompt = redact_secrets(build_context(payload))
 
     try:
-        response = asyncio.run(provider.generate(prompt, model=model, system="You are a careful bug bounty research assistant. Keep the investigator in the loop and never act autonomously."))
+        response = asyncio.run(
+            provider.generate(
+                prompt,
+                model=model,
+                system="You are a careful bug bounty research assistant. Keep the investigator in the loop and never act autonomously.",
+            )
+        )
     except Exception as exc:  # pragma: no cover - defensive CLI error handling
         typer.echo(f"Unable to contact Ollama at {settings.ollama.base_url}: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -448,9 +633,12 @@ def investigate(
     question: str = typer.Argument(..., help="Investigation question for the local model."),
     target_name: str = typer.Option("", "--target", "-t", help="Target override."),
     auth_name: str = typer.Option("", "--auth", help="Authentication profile name."),
+    session_id: int | None = typer.Option(None, "--session", help="Session ID to resume/use."),
     model: str | None = typer.Option(None, "--model", "-m", help="Optional model name override."),
     max_steps: int = typer.Option(4, "--max-steps", min=1, max=8, help="Maximum model/tool turns."),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show proposed tools without executing them."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show proposed tools without executing them."
+    ),
 ) -> None:
     """Ask Ollama to investigate using approved, human-confirmed tools."""
     settings = Settings.load(Path.cwd())
@@ -469,6 +657,32 @@ def investigate(
     if not scope:
         typer.echo("The target has no scope. Add one before enabling tools.", err=True)
         raise typer.Exit(code=1)
+
+    selected_session_id = session_id or settings.active_session_id
+    if selected_session_id is None:
+        selected_session_id = service.create_session(
+            target_name=selected_target,
+            title=question[:255],
+        )
+        settings.active_target = selected_target
+        settings.active_session_id = selected_session_id
+        settings.save()
+    try:
+        session_data = service.get_session(selected_session_id)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    if session_data["target"] != selected_target:
+        typer.echo("The selected session belongs to a different target.", err=True)
+        raise typer.Exit(code=1)
+    if session_data["status"] != "active":
+        typer.echo(
+            "The selected session is not active. Resume it with 'bbai session resume'.", err=True
+        )
+        raise typer.Exit(code=1)
+    settings.active_target = selected_target
+    settings.active_session_id = selected_session_id
+    settings.save()
 
     auth_context = None
     auth_label = "unauthenticated"
@@ -518,8 +732,35 @@ def investigate(
             question=question,
         )
     )
+    recent_events = session_data["events"][-20:]
+    recent_notes = session_data["notes"][-20:]
+    history_lines = [
+        f"- [{event['type']}] {event['content']}"
+        for event in recent_events
+        if isinstance(event, dict)
+    ]
+    history_lines.extend(
+        f"- [note] {note['content']}" for note in recent_notes if isinstance(note, dict)
+    )
+    if history_lines:
+        context += "\n\nRecent session history:\n" + "\n".join(history_lines)
+    context = redact_secrets(
+        context,
+        auth_context.secret_values if auth_context else (),
+    )
+    service.add_session_event(
+        selected_session_id,
+        event_type="question",
+        content=question,
+        secret_values=auth_context.secret_values if auth_context else (),
+    )
     if auth_context:
-        context = redact_secrets(context, auth_context.secret_values)
+        service.add_session_event(
+            selected_session_id,
+            event_type="auth_profile",
+            content=auth_context.label,
+            details={"profile": auth_context.profile.name},
+        )
     messages: list[dict[str, object]] = [
         {
             "role": "user",
@@ -549,21 +790,37 @@ def investigate(
             )
             messages.append(turn.message)
             if not turn.tool_calls:
+                service.add_session_event(
+                    selected_session_id,
+                    event_type="assistant",
+                    content=turn.text,
+                    secret_values=auth_context.secret_values if auth_context else (),
+                )
                 typer.echo(turn.text)
                 return
             for call in turn.tool_calls:
                 policy.validate_tool(call.name)
                 tool = tools[call.name]
+                secret_values = auth_context.secret_values if auth_context else ()
+                safe_arguments = _redact_mapping(call.arguments, secret_values)
+                service.add_session_event(
+                    selected_session_id,
+                    event_type="tool_call",
+                    content=call.name,
+                    details={"arguments": safe_arguments},
+                    secret_values=secret_values,
+                )
                 typer.echo(
-                    f"\nEl modelo solicita usar {call.name}: {call.arguments} "
-                    f"(auth: {auth_label})"
+                    f"\nEl modelo solicita usar {call.name}: {call.arguments} (auth: {auth_label})"
                 )
                 started = time.monotonic()
                 if dry_run:
                     result = "Dry run: tool was not executed."
                     execution_status = "dry_run"
                     approved = False
-                elif not policy.requires_approval(call.name) or not typer.confirm("¿Autorizar esta herramienta?", default=False):
+                elif not policy.requires_approval(call.name) or not typer.confirm(
+                    "¿Autorizar esta herramienta?", default=False
+                ):
                     result = "Human approval denied; do not retry this tool call."
                     execution_status = "denied"
                     approved = False
@@ -574,23 +831,40 @@ def investigate(
                         approved = True
                         service.add_evidence(
                             target_name=selected_target,
-                            source=f"tool:{tool.name}:{call.arguments}",
+                            source=f"tool:{tool.name}:{safe_arguments}",
                             kind=f"tool-{tool.name}",
                             content=result,
+                            session_id=selected_session_id,
                         )
                     except (RuntimeError, TypeError, ValueError, httpx.HTTPError) as exc:
-                        result = f"Tool execution failed: {exc}"
+                        result = redact_secrets(
+                            f"Tool execution failed: {exc}",
+                            secret_values,
+                        )
                         execution_status = "failed"
                         approved = True
+                result = redact_secrets(result, secret_values)
                 service.add_tool_execution(
                     target_name=selected_target,
                     tool_name=call.name,
-                    arguments=call.arguments,
+                    arguments=safe_arguments,
                     status=execution_status,
                     approved=approved,
                     output=result if execution_status == "succeeded" else None,
                     error=result if execution_status in {"failed", "denied"} else None,
                     duration_ms=round((time.monotonic() - started) * 1000),
+                    session_id=selected_session_id,
+                )
+                service.add_session_event(
+                    selected_session_id,
+                    event_type="tool_result",
+                    content=result,
+                    details={
+                        "tool": call.name,
+                        "status": execution_status,
+                        "approved": approved,
+                    },
+                    secret_values=secret_values,
                 )
                 messages.append(
                     {
@@ -599,7 +873,9 @@ def investigate(
                         "content": result,
                     }
                 )
-        typer.echo("The investigation reached the maximum tool steps without a final answer.", err=True)
+        typer.echo(
+            "The investigation reached the maximum tool steps without a final answer.", err=True
+        )
         raise typer.Exit(code=1)
     except (httpx.HTTPError, RuntimeError, TypeError, ValueError) as exc:
         typer.echo(f"Investigation failed: {exc}", err=True)
@@ -609,7 +885,9 @@ def investigate(
 @app.command("analyze")
 def analyze_evidence(
     path: str = typer.Argument(..., help="File containing evidence or a request to analyze."),
-    target_name: str = typer.Option("", "--target", "-t", help="Optional target name to include in the context."),
+    target_name: str = typer.Option(
+        "", "--target", "-t", help="Optional target name to include in the context."
+    ),
     model: str | None = typer.Option(None, "--model", "-m", help="Optional model name override."),
 ) -> None:
     evidence_path = Path(path).expanduser().resolve()
@@ -656,10 +934,16 @@ def analyze_evidence(
         evidence=evidence,
         question="Analyze this evidence and summarize what is relevant to the investigation.",
     )
-    prompt = build_context(payload)
+    prompt = redact_secrets(build_context(payload))
 
     try:
-        response = asyncio.run(provider.generate(prompt, model=model, system="You are a cautious assistant for technical evidence review. Stay within the human-approved investigation scope."))
+        response = asyncio.run(
+            provider.generate(
+                prompt,
+                model=model,
+                system="You are a cautious assistant for technical evidence review. Stay within the human-approved investigation scope.",
+            )
+        )
     except Exception as exc:  # pragma: no cover - defensive CLI error handling
         typer.echo(f"Unable to contact Ollama at {settings.ollama.base_url}: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -668,7 +952,9 @@ def analyze_evidence(
 
 
 @_finding_app.command("list")
-def list_findings(target_name: str = typer.Option("", "--target", "-t", help="Optional target filter.")) -> None:
+def list_findings(
+    target_name: str = typer.Option("", "--target", "-t", help="Optional target filter."),
+) -> None:
     settings = Settings.load(Path.cwd())
     service = ProjectService(str(settings.db_path))
     findings = service.list_findings(target_name=target_name or None)
@@ -676,17 +962,269 @@ def list_findings(target_name: str = typer.Option("", "--target", "-t", help="Op
         typer.echo("No findings recorded yet.")
         return
     for finding in findings:
-        typer.echo(f"- {finding['title']} [{finding['severity']}] {finding['status']}")
+        typer.echo(
+            f"- F-{finding['id']:03d} {finding['title']} "
+            f"[{finding['severity']}, {finding['status']}]"
+        )
+
+
+@_finding_app.command("create")
+def create_finding(
+    title: str = typer.Argument(..., help="Finding title."),
+    summary: str = typer.Argument(..., help="Technical summary of the finding."),
+    target_name: str = typer.Option("", "--target", "-t", help="Target override."),
+    severity: str = typer.Option("info", "--severity"),
+    confidence: str = typer.Option("unknown", "--confidence"),
+    impact: str = typer.Option("", "--impact"),
+    reproduction: str = typer.Option("", "--reproduction"),
+    remediation: str = typer.Option("", "--remediation"),
+    evidence_ids: Annotated[list[int] | None, typer.Option("--evidence")] = None,
+    observation_ids: Annotated[list[int] | None, typer.Option("--observation")] = None,
+    hypothesis_ids: Annotated[list[int] | None, typer.Option("--hypothesis")] = None,
+    execution_ids: Annotated[list[int] | None, typer.Option("--execution")] = None,
+) -> None:
+    settings = Settings.load(Path.cwd())
+    selected_target = target_name or settings.active_target
+    if not selected_target:
+        typer.echo("No target selected. Use 'bbai target use <name>' or pass --target.", err=True)
+        raise typer.Exit(code=1)
+    try:
+        finding_id = ProjectService(str(settings.db_path)).add_finding(
+            target_name=selected_target,
+            title=title,
+            summary=summary,
+            severity=severity,
+            confidence=confidence,
+            impact=impact,
+            reproduction=reproduction,
+            remediation=remediation,
+            evidence_ids=evidence_ids,
+            observation_ids=observation_ids,
+            hypothesis_ids=hypothesis_ids,
+            execution_ids=execution_ids,
+            session_id=settings.active_session_id,
+        )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Finding F-{finding_id:03d} created as draft")
+
+
+@_finding_app.command("show")
+def show_finding(finding_id: int = typer.Argument(..., help="Numeric finding ID.")) -> None:
+    try:
+        finding = ProjectService(str(Settings.load(Path.cwd()).db_path)).get_finding(finding_id)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        f"F-{finding['id']:03d} {finding['title']}\n"
+        f"Target: {finding['target']}\n"
+        f"Status: {finding['status']} | Severity: {finding['severity']} "
+        f"| Confidence: {finding['confidence']}\n"
+        f"Summary: {finding['summary']}\n"
+        f"Impact: {finding['impact']}\n"
+        f"Reproduction: {finding['reproduction']}\n"
+        f"Remediation: {finding['remediation']}\n"
+        f"Evidence IDs: {', '.join(str(item['id']) for item in finding['evidence']) or 'none'}\n"
+        f"Observations: {', '.join(str(item['id']) for item in finding['observations']) or 'none'}\n"
+        f"Hypotheses: {', '.join(str(item['id']) for item in finding['hypotheses']) or 'none'}\n"
+        f"Reviews: {len(finding['reviews'])}"
+    )
+
+
+@_finding_app.command("update")
+def update_finding(
+    finding_id: int = typer.Argument(..., help="Numeric finding ID."),
+    status: str | None = typer.Option(None, "--status"),
+    severity: str | None = typer.Option(None, "--severity"),
+    confidence: str | None = typer.Option(None, "--confidence"),
+    impact: str | None = typer.Option(None, "--impact"),
+    reproduction: str | None = typer.Option(None, "--reproduction"),
+    remediation: str | None = typer.Option(None, "--remediation"),
+) -> None:
+    if all(
+        value is None for value in (status, severity, confidence, impact, reproduction, remediation)
+    ):
+        typer.echo("Provide at least one field to update.", err=True)
+        raise typer.Exit(code=1)
+    try:
+        ProjectService(str(Settings.load(Path.cwd()).db_path)).update_finding(
+            finding_id,
+            status=status,
+            severity=severity,
+            confidence=confidence,
+            impact=impact,
+            reproduction=reproduction,
+            remediation=remediation,
+        )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Finding F-{finding_id:03d} updated")
 
 
 @_finding_app.command("review")
-def review_finding(finding_id: str = typer.Argument(..., help="Finding ID to review.")) -> None:
-    typer.echo(f"Review workflow for {finding_id} is scaffolded. Human validation is required before finalizing a finding.")
+def review_finding(
+    finding_id: int = typer.Argument(..., help="Numeric finding ID."),
+    decision: str = typer.Option(..., "--decision", help="accepted or rejected."),
+    note: str = typer.Option("", "--note", help="Reviewer rationale."),
+) -> None:
+    try:
+        ProjectService(str(Settings.load(Path.cwd()).db_path)).review_finding(
+            finding_id, decision=decision, note=note
+        )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Finding F-{finding_id:03d} {decision}")
 
 
 @app.command("report")
-def generate_report(finding_id: str = typer.Argument(..., help="Finding ID to report.")) -> None:
-    typer.echo(f"Report generation for {finding_id} is scaffolded. The report will include evidence and reviewer notes.")
+def generate_report(
+    finding_id: int | None = typer.Argument(None, help="Optional numeric finding ID."),
+    target_name: str = typer.Option("", "--target", "-t", help="Target override."),
+    output_format: str = typer.Option("markdown", "--format", help="markdown or json."),
+    output_path: Annotated[
+        Path | None, typer.Option("--output", "-o", help="Write report to a file.")
+    ] = None,
+    include_drafts: bool = typer.Option(
+        False, "--include-drafts", help="Explicitly include findings not yet accepted."
+    ),
+) -> None:
+    if output_format not in {"markdown", "json"}:
+        typer.echo("Format must be 'markdown' or 'json'.", err=True)
+        raise typer.Exit(code=1)
+    settings = Settings.load(Path.cwd())
+    selected_target = target_name or settings.active_target
+    service = ProjectService(str(settings.db_path))
+    try:
+        findings = service.report_findings(
+            target_name=selected_target,
+            finding_id=finding_id,
+            include_drafts=include_drafts,
+        )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    if not findings:
+        typer.echo("No accepted findings to report.", err=True)
+        raise typer.Exit(code=1)
+    target_names = {str(finding["target"]) for finding in findings}
+    secrets: list[str] = []
+    store = KeyringSecretStore()
+    try:
+        for name in target_names:
+            for profile in service.list_auth_profiles(target_name=name):
+                payload = store.get(str(profile["secret_ref"]))
+                secrets.extend(payload.values())
+    except (KeyringError, ValueError) as exc:
+        typer.echo(f"Unable to verify report redaction: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    _redact_report_data(findings, secrets)
+    if output_format == "json":
+        rendered = json.dumps(findings, ensure_ascii=False, indent=2)
+    else:
+        rendered = _render_markdown_report(findings)
+    rendered = redact_secrets(rendered, secrets)
+    if output_path:
+        output_path = output_path.expanduser().resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(rendered + "\n", encoding="utf-8")
+        typer.echo(f"Report written to {output_path}")
+    else:
+        typer.echo(rendered)
+
+
+def _redact_report_data(value: object, secrets: list[str]) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(item, (dict, list)):
+                _redact_report_data(item, secrets)
+            elif isinstance(item, str):
+                value[key] = redact_secrets(item, secrets)
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            if isinstance(item, (dict, list)):
+                _redact_report_data(item, secrets)
+            elif isinstance(item, str):
+                value[index] = redact_secrets(item, secrets)
+
+
+def _redact_mapping(
+    values: dict[str, object],
+    secrets: tuple[str, ...],
+) -> dict[str, object]:
+    return {key: _redact_nested(value, secrets) for key, value in values.items()}
+
+
+def _redact_nested(value: object, secrets: tuple[str, ...]) -> object:
+    if isinstance(value, str):
+        return redact_secrets(value, secrets)
+    if isinstance(value, dict):
+        return {
+            str(key): _redact_nested(item, secrets)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_nested(item, secrets) for item in value]
+    return value
+
+
+def _render_markdown_report(findings: list[FindingData]) -> str:
+    sections = ["# Bug Bounty Findings Report"]
+    for finding in findings:
+        sections.extend(
+            [
+                f"## {finding['title']}",
+                "",
+                f"- Target: {finding['target']}",
+                f"- Severity: {finding['severity']}",
+                f"- Confidence: {finding['confidence']}",
+                f"- Status: {finding['status']}",
+                f"- Session: {finding['session_title'] or 'unspecified'}",
+                f"- Authentication profiles: {', '.join(finding['auth_profiles']) or 'none'}",
+                "",
+                str(finding["summary"]),
+                "",
+                "### Impact",
+                "",
+                str(finding["impact"]),
+                "",
+                "### Reproduction",
+                "",
+                str(finding["reproduction"]),
+                "",
+                "### Remediation",
+                "",
+                str(finding["remediation"]),
+                "",
+                "### Evidence",
+                "",
+            ]
+        )
+        evidence_items = finding["evidence"]
+        if not evidence_items:
+            sections.append("No linked evidence.")
+        for item in evidence_items:
+            sections.extend(
+                [
+                    f"#### E-{item['id']:03d}: {item['kind']} ({item['source']})",
+                    "",
+                    "```text",
+                    str(item["content"]).replace("```", "` ` `"),
+                    "```",
+                    "",
+                ]
+            )
+        reviews = finding["reviews"]
+        if reviews:
+            sections.extend(["### Review notes", ""])
+            sections.extend(
+                f"- {item['decision']} by {item['reviewer']}: {item['note']}" for item in reviews
+            )
+            sections.append("")
+    return "\n".join(sections).rstrip()
 
 
 if __name__ == "__main__":

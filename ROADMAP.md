@@ -11,6 +11,11 @@ Este documento distingue entre:
 
 ## Estado actual
 
+El núcleo funcional del MVP quedó implementado el 30-09-2026: findings con revisión
+humana, sesiones persistidas, exportación Markdown/JSON, adopción de bases existentes
+mediante Alembic y uso/redacción de autenticación en `ffuf`. Las tareas no completadas
+siguen sin marcarse y continúan en las fases siguientes.
+
 El MVP ya dispone de:
 
 - instalación persistente y CLI `bbai`;
@@ -53,59 +58,66 @@ Pregunta
 
 ## Fase 1 — Findings y revisión humana
 
+**Estado: completada.**
+
 **Objetivo:** cerrar el ciclo entre hipótesis y resultado reportable.
 
-- [ ] Crear `finding` desde una hipótesis u observación.
-- [ ] Añadir título, descripción, severidad, confianza, impacto y recomendación.
-- [ ] Asociar findings con evidencias, observaciones, hipótesis y ejecuciones.
-- [ ] Implementar `finding list`, `finding show` y actualización controlada.
-- [ ] Añadir estados `draft`, `in_review`, `accepted`, `rejected` y `reported`.
-- [ ] Añadir notas y decisión del revisor.
-- [ ] Impedir que un finding no aceptado se incluya en un informe final.
-- [ ] Añadir tests de transiciones de estado y de integridad de relaciones.
+- [x] Crear findings y enlazarlos con observaciones o hipótesis.
+- [x] Añadir título, resumen, severidad, confianza, impacto, reproducción y mitigación.
+- [x] Asociar findings con evidencias, observaciones, hipótesis y ejecuciones.
+- [x] Implementar `finding list`, `finding show` y actualización controlada.
+- [x] Añadir estados `draft`, `in_review`, `accepted`, `rejected` y `reported`.
+- [x] Persistir notas y decisiones de revisión humana.
+- [x] Impedir que un finding no aceptado aparezca en informes normales.
+- [x] Añadir tests de transiciones de estado y de relaciones.
 
 **Criterio de salida:** una persona puede revisar, aceptar o rechazar un finding y
 obtener el historial completo que lo respalda.
 
 ## Fase 2 — Sesiones y continuidad de investigación
 
+**Estado: núcleo completado; etiquetas y exportación de sesiones pendientes.**
+
 **Objetivo:** convertir ejecuciones aisladas en investigaciones reanudables.
 
-- [ ] Crear sesiones por target y objetivo de investigación.
-- [ ] Persistir preguntas, respuestas, llamadas a herramientas y aprobaciones.
-- [ ] Agrupar evidencias, observaciones, hipótesis y findings por sesión.
-- [ ] Añadir notas manuales y etiquetas.
-- [ ] Implementar `session list`, `session show`, `session resume` y cierre de sesión.
-- [ ] Mostrar un resumen de sesión para continuar el trabajo sin reconstruir el contexto.
-- [ ] Definir retención y exportación de sesiones.
+- [x] Crear sesiones por target y objetivo de investigación.
+- [x] Persistir preguntas, respuestas, llamadas a herramientas, resultados y decisiones.
+- [x] Asociar evidencias, observaciones, hipótesis y findings a sesiones.
+- [x] Añadir notas manuales.
+- [x] Implementar `session list`, `session show`, `session resume` y cierre.
+- [x] Incluir eventos y notas recientes como contexto al reanudar una investigación.
+- [ ] Añadir etiquetas, política de retención y exportación de sesiones.
 
 **Criterio de salida:** una investigación puede pausarse y reanudarse conservando
 contexto, decisiones y trazabilidad.
 
 ## Fase 3 — Reporting y exportación
 
+**Estado: exportación básica completada; plantillas y previsualización avanzada pendientes.**
+
 **Objetivo:** transformar el trabajo revisado en entregables utilizables.
 
-- [ ] Generar informes Markdown.
-- [ ] Generar informes JSON para integraciones.
-- [ ] Incluir únicamente findings aceptados, salvo exportación explícita de borradores.
-- [ ] Incorporar evidencias, impacto, severidad, pasos de reproducción y mitigación.
-- [ ] Añadir metadatos del target, sesión, fechas y perfil de autenticación usado sin
-  exponer secretos.
+- [x] Generar informes Markdown.
+- [x] Generar informes JSON para integraciones.
+- [x] Incluir únicamente findings aceptados/reportados salvo opción explícita de borradores.
+- [x] Incorporar evidencias, impacto, severidad, pasos de reproducción y mitigación.
+- [x] Añadir metadatos del target, sesión y perfil de autenticación sin exponer secretos.
 - [ ] Añadir plantillas configurables por programa o equipo.
-- [ ] Implementar `report preview` y `report export`.
-- [ ] Añadir validación de que los informes no contienen secretos redactables.
+- [x] Implementar salida a pantalla y `--output` para exportar.
+- [x] Redactar secretos de perfiles activos y cabeceras sensibles en el informe.
 
 **Criterio de salida:** un investigador puede generar un informe reproducible y
 compartible a partir de findings aceptados.
 
 ## Fase 4 — Persistencia, migraciones y búsqueda
 
+**Estado: migraciones completadas; búsqueda pendiente.**
+
 **Objetivo:** hacer evolucionar el esquema y localizar conocimiento sin perder
 compatibilidad.
 
-- [ ] Sustituir migraciones ad hoc por Alembic.
-- [ ] Versionar el esquema y documentar migraciones desde instalaciones existentes.
+- [x] Sustituir migraciones ad hoc por Alembic.
+- [x] Versionar el esquema y adoptar bases SQLite existentes sin perder sus datos.
 - [ ] Añadir SQLite FTS5 para targets, evidencias, notas, observaciones, hipótesis y
   findings.
 - [ ] Implementar `bbai search`.
@@ -118,11 +130,13 @@ investigador puede encontrar rápidamente cualquier artefacto relevante.
 
 ## Fase 5 — Autenticación avanzada y perfiles de ejecución
 
+**Estado: uso autenticado de `ffuf` completado; resto pendiente.**
+
 **Objetivo:** cubrir aplicaciones autenticadas reales sin convertir las credenciales en
 datos de la investigación.
 
-- [ ] Aplicar headers autenticados a `ffuf` cuando el modo de uso lo permita.
-- [ ] Revisar la inyección de autenticación en herramientas externas y su redacción.
+- [x] Aplicar headers autenticados a `ffuf`.
+- [x] Redactar valores secretos de la salida de `ffuf`.
 - [ ] Permitir expiración configurable desde CLI.
 - [ ] Añadir perfiles explícitos `anonymous`, `user`, `admin` y equivalentes definidos
   por el investigador.
@@ -175,10 +189,11 @@ operativas suficientes para confiar en él durante una investigación real.
 El orden recomendado es:
 
 ```text
-Findings/revisión
+Migraciones Alembic
+  → Findings/revisión
   → Sesiones
   → Reporting
-  → Migraciones/búsqueda
+  → Búsqueda
   → Autenticación avanzada
   → Más herramientas
   → Automatización supervisada
@@ -285,4 +300,3 @@ comprometido.
    colaboración y roles?
 4. ¿Debe el primer informe estar orientado a Markdown técnico, a formatos de plataformas
    Bug Bounty o a ambos?
-

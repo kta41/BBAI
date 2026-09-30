@@ -8,6 +8,7 @@ Requires-Dist: typer>=0.12.3
 Requires-Dist: pydantic>=2.10.6
 Requires-Dist: httpx>=0.27.0
 Requires-Dist: sqlalchemy>=2.0.36
+Requires-Dist: alembic>=1.14.0
 Requires-Dist: keyring>=25.6.0
 Provides-Extra: dev
 Requires-Dist: pytest>=8.3.4; extra == "dev"
@@ -16,9 +17,53 @@ Requires-Dist: mypy>=1.13.0; extra == "dev"
 
 # bbai
 
-`bbai` is a local CLI for Bug Bounty / Web Security research that keeps the human investigator in the loop and uses local Ollama models as the analysis backend.
+> **A local, human-controlled investigation workspace for Bug Bounty and Web Security teams.**
 
-The first phase focuses on a solid foundation: project setup, data model, storage, model abstraction, structured context generation, and a CLI entry point. It intentionally avoids autonomous offensive tooling and arbitrary code execution by the LLM.
+Security research is often spread across terminals, browser tabs, notes, HTTP clients,
+scanner output, and disconnected AI conversations. `bbai` brings that workflow into one
+local product: it gives researchers a persistent workspace for targets, scope, evidence,
+tool executions, observations, hypotheses, and findings, while using local Ollama models
+to accelerate analysis without sending sensitive research data to a hosted AI service.
+
+`bbai` is designed for researchers and security teams that need to:
+
+- move from an initial question to evidence-backed investigation faster;
+- preserve context and decisions across sessions and team handoffs;
+- use AI as a force multiplier while keeping every impactful action under human control;
+- work with authenticated targets without exposing credentials to the model or database;
+- create a reliable trail from tool execution to evidence, hypothesis, finding, and report.
+
+The product is local-first, extensible, and deliberately conservative: the model can
+propose an approved tool, but `bbai` validates scope, requests human approval, applies
+execution limits, redacts secrets, and stores the result for review. It is not an
+autonomous exploitation agent and it never provides arbitrary shell access to the LLM.
+
+[Read this README in Spanish](README.es.md).
+
+## Product vision
+
+The long-term goal is to evolve from a local AI-assisted investigation workspace into a
+controlled security research platform:
+
+```text
+Question
+  → Context
+  → Approved tool call
+  → Scope and safety policy
+  → Evidence
+  → Observation
+  → Hypothesis
+  → Human-reviewed finding
+  → Report
+```
+
+The current MVP already includes the core investigation loop, local Ollama tool calling,
+scope validation, four controlled tools, execution records, authenticated HTTP profiles,
+secret redaction, evidence persistence, observations, and hypotheses. The remaining
+roadmap focuses on completing findings, review workflows, reports, sessions, search, and
+more advanced integrations.
+
+See the detailed plan in [ROADMAP.md](ROADMAP.md).
 
 ## Goals
 
@@ -154,6 +199,40 @@ Las observaciones y las hipótesis se incorporan al contexto de `bbai ask` e
 `bbai investigate`. Crear una observación o hipótesis es siempre una acción
 explícita del investigador; el modelo no convierte automáticamente cualquier
 respuesta en un finding.
+
+## Autenticación de targets
+
+Los targets pueden tener perfiles de autenticación separados. Los secretos se almacenan
+en el keyring del sistema mediante `keyring`; SQLite solo conserva metadatos y una
+referencia al secreto:
+
+```bash
+bbai auth profile-add normal-user --type cookie
+bbai auth profile-add api-client --type bearer
+bbai auth profile-add partner --type api_key
+bbai auth profile-add custom --type headers
+bbai auth list
+```
+
+Los valores se solicitan ocultos y no se imprimen. Para usar un perfil en el agente:
+
+```bash
+bbai investigate \
+  "Comprueba /api/profile usando la sesión del usuario normal" \
+  --auth normal-user
+```
+
+La confirmación indica el perfil y el tipo de autenticación, pero nunca muestra el
+secreto. Los valores se inyectan solo en memoria, se redactan antes de guardar evidencias
+o enviarlas a Ollama, y el perfil puede revocarse:
+
+```bash
+bbai auth revoke normal-user
+```
+
+Esta primera versión soporta `bearer`, `cookie`, `api_key` y `headers`. La importación
+de cookies exportadas desde un navegador y los flujos OAuth/SSO se añadirán después; el
+login y MFA siguen siendo manuales.
 
 ## Tool calling experimental
 

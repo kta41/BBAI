@@ -20,6 +20,9 @@ src/bbai/auth/store.py
 src/bbai/context/builder.py
 src/bbai/llm/__init__.py
 src/bbai/llm/provider.py
+src/bbai/migrations/__init__.py
+src/bbai/migrations/env.py
+src/bbai/migrations/versions/0001_adopt_existing_workspace.py
 src/bbai/services/project_service.py
 src/bbai/tools/base.py
 src/bbai/tools/policy.py

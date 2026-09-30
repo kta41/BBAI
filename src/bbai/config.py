@@ -18,6 +18,7 @@ class Settings(BaseModel):
     project_root: Path = Field(default=Path.cwd())
     data_dir: Path = Field(default=Path(".bbai"))
     active_target: str | None = Field(default=None)
+    active_session_id: int | None = Field(default=None)
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
 
     @property
@@ -40,6 +41,8 @@ class Settings(BaseModel):
             payload["data_dir"] = data["data_dir"]
         if "active_target" in data:
             payload["active_target"] = data["active_target"]
+        if "active_session_id" in data:
+            payload["active_session_id"] = data["active_session_id"]
         if "ollama" in data:
             payload["ollama"] = data["ollama"]
         return cls.model_validate(payload)
@@ -47,10 +50,16 @@ class Settings(BaseModel):
     def save(self) -> Path:
         config_file = self.project_root / ".bbai.toml"
         self.project_root.mkdir(parents=True, exist_ok=True)
+        active_session = (
+            f"active_session_id = {self.active_session_id}\n"
+            if self.active_session_id is not None
+            else ""
+        )
         config_file.write_text(
             f'project_name = "{self.project_name}"\n'
             f'data_dir = "{self.data_dir.as_posix()}"\n\n'
             f"active_target = {json.dumps(self.active_target or '')}\n\n"
+            f"{active_session}\n"
             "[ollama]\n"
             f'base_url = "{self.ollama.base_url}"\n'
             f'default_model = "{self.ollama.default_model}"\n'
