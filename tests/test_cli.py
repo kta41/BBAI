@@ -4,6 +4,7 @@ from pytest import MonkeyPatch
 from typer.testing import CliRunner
 
 from bbai.cli import app
+from bbai.config import Settings
 
 runner = CliRunner()
 
@@ -13,12 +14,40 @@ def test_init_creates_project(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     result = runner.invoke(app, ["init"])
     assert result.exit_code == 0
     assert "Project initialized" in result.stdout
+    assert "interactive terminal" in result.stdout
+
+
+def test_init_setup_can_be_rerun_interactively(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    runner.invoke(app, ["init", "--skip-dependency-setup"])
+    terminal = type("Terminal", (), {"isatty": lambda self: True})()
+    monkeypatch.setattr("bbai.cli.sys.stdin", terminal)
+    invoked = []
+    monkeypatch.setattr("bbai.cli.run_setup_wizard", lambda settings: invoked.append(settings))
+    result = runner.invoke(app, ["init", "--setup"])
+    assert result.exit_code == 0
+    assert len(invoked) == 1
+    assert Settings.load(tmp_path).setup_wizard_completed
 
 
 def test_target_add_and_list(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     runner.invoke(app, ["init"])
-    result = runner.invoke(app, ["target", "add", "example.com", "--description", "Example target", "--scope", "example.com"])
+    result = runner.invoke(
+        app,
+        [
+            "target",
+            "add",
+            "example.com",
+            "--description",
+            "Example target",
+            "--scope",
+            "example.com",
+        ],
+    )
     assert result.exit_code == 0
     assert "Target 'example.com' added" in result.stdout
 

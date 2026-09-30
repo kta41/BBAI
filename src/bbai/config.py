@@ -19,6 +19,7 @@ class Settings(BaseModel):
     data_dir: Path = Field(default=Path(".bbai"))
     active_target: str | None = Field(default=None)
     active_session_id: int | None = Field(default=None)
+    setup_wizard_completed: bool = Field(default=False)
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
 
     @property
@@ -43,6 +44,8 @@ class Settings(BaseModel):
             payload["active_target"] = data["active_target"]
         if "active_session_id" in data:
             payload["active_session_id"] = data["active_session_id"]
+        if "setup_wizard_completed" in data:
+            payload["setup_wizard_completed"] = data["setup_wizard_completed"]
         if "ollama" in data:
             payload["ollama"] = data["ollama"]
         return cls.model_validate(payload)
@@ -59,6 +62,7 @@ class Settings(BaseModel):
             f'project_name = "{self.project_name}"\n'
             f'data_dir = "{self.data_dir.as_posix()}"\n\n'
             f"active_target = {json.dumps(self.active_target or '')}\n\n"
+            f"setup_wizard_completed = {str(self.setup_wizard_completed).lower()}\n"
             f"{active_session}\n"
             "[ollama]\n"
             f'base_url = "{self.ollama.base_url}"\n'

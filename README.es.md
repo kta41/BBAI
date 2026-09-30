@@ -102,6 +102,14 @@ El instalador crea `.venv`, instala el proyecto en modo editable y crea
 `~/.local/bin/bbai`. Tras reiniciar el equipo, bastará con abrir una terminal y utilizar
 `bbai <comando>`.
 
+La primera vez que ejecutes `bbai init`, un asistente te permitirá instalar todas,
+algunas o ninguna de las herramientas opcionales (`subfinder`, `ffuf`, `gau`, `katana` y
+`nuclei`); para ellas hace falta Go. También podrás elegir instalar Ollama con su
+instalador oficial y descargar el modelo configurado (`llama3.1` por defecto; puede
+ocupar varios GB). No se instala nada externo sin que lo selecciones. Puedes volver a
+abrir el asistente con `bbai init --setup`, omitirlo con
+`bbai init --skip-dependency-setup` y revisar dependencias con `bbai doctor`.
+
 Instalación manual:
 
 ```bash

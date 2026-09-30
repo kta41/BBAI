@@ -19,6 +19,8 @@ continúan sin marcarse.
 El MVP ya dispone de:
 
 - instalación persistente y CLI `bbai`;
+- asistente interactivo en el primer `bbai init` para seleccionar herramientas opcionales
+  y Ollama/modelo;
 - targets, scope y target activo;
 - SQLite con SQLAlchemy;
 - integración con Ollama;

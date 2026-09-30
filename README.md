@@ -99,6 +99,15 @@ Para inicializar el workspace actual:
 bbai init
 ```
 
+La primera vez, `bbai init` ofrece un asistente interactivo para instalar todas, algunas
+o ninguna de las herramientas opcionales (`subfinder`, `ffuf`, `gau`, `katana` y
+`nuclei`). La instalación de estas herramientas requiere Go. También puede ofrecer
+instalar Ollama mediante su instalador oficial y descargar el modelo configurado
+(`llama3.1` por defecto; descarga grande). Cada instalación o descarga requiere elegirla
+explícitamente. Para repetir el asistente usa `bbai init --setup`; para omitirlo,
+`bbai init --skip-dependency-setup`. La instalación se puede completar más tarde, y
+`bbai doctor` muestra qué dependencias siguen faltando.
+
 Si `~/.local/bin` ya estaba en el `PATH`, el `source` no será necesario. También se puede
 cargar el instalador en la shell actual con `source ./setup.sh`.
 

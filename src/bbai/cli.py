@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +23,7 @@ from bbai.db import init_db
 from bbai.diagnostics import run_diagnostics
 from bbai.llm.provider import OllamaProvider
 from bbai.services.project_service import FindingData, ProjectService
+from bbai.setup_wizard import run_setup_wizard
 from bbai.tools.policy import ScopePolicy
 from bbai.tools.registry import build_tools, tool_availability, tool_definitions
 
@@ -55,16 +58,47 @@ def init_project(
     project_root: str = typer.Option(
         ".", "--project-root", "-p", help="Project directory to initialize."
     ),
+    setup_dependencies: bool = typer.Option(
+        False, "--setup", help="Run the dependency setup wizard even if already completed."
+    ),
+    skip_dependency_setup: bool = typer.Option(
+        False, "--skip-dependency-setup", help="Initialize without opening the setup wizard."
+    ),
 ) -> None:
+    if setup_dependencies and skip_dependency_setup:
+        typer.echo("Use either --setup or --skip-dependency-setup, not both.", err=True)
+        raise typer.Exit(code=2)
     root = Path(project_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    settings = Settings(project_root=root)
+    settings = Settings.load(root)
     settings.save()
     storage_dir = root / settings.data_dir
     storage_dir.mkdir(parents=True, exist_ok=True)
     init_db(str(settings.db_path))
     typer.echo(f"Project initialized at {root}")
     typer.echo(f"Database created at {settings.db_path}")
+    should_run_setup = setup_dependencies or not settings.setup_wizard_completed
+    if skip_dependency_setup:
+        typer.echo("Dependency setup skipped. Run `bbai init --setup` to configure it later.")
+    elif should_run_setup and not setup_dependencies and not sys.stdin.isatty():
+        typer.echo(
+            "Dependency setup needs an interactive terminal. "
+            "Run `bbai init --setup` from a terminal to configure it."
+        )
+    elif should_run_setup:
+        try:
+            run_setup_wizard(settings)
+        except (
+            OSError,
+            RuntimeError,
+            ValueError,
+            httpx.HTTPError,
+            subprocess.CalledProcessError,
+        ) as exc:
+            typer.echo(f"Dependency setup failed: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        settings.setup_wizard_completed = True
+        settings.save()
 
 
 @_target_app.command("add")
