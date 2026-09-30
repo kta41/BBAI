@@ -5,6 +5,8 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
+from bbai.filesystem import create_private_directory
+
 
 class BackupError(RuntimeError):
     pass
@@ -21,7 +23,7 @@ def create_database_backup(database_path: Path, destination: Path) -> Path:
     _validate_database(source)
     temporary: Path | None = None
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
+        create_private_directory(target.parent)
         temporary = _temporary_path(target.parent, target.name)
         _copy_database(source, temporary)
         _validate_database(temporary)
@@ -56,7 +58,7 @@ def restore_database_backup(
     temporary: Path | None = None
     previous_backup: Path | None = None
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
+        create_private_directory(target.parent)
         temporary = _temporary_path(target.parent, target.name)
         _copy_database(source, temporary)
         _validate_database(temporary)

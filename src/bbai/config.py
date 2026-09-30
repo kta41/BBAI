@@ -6,6 +6,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from bbai.filesystem import atomic_write_private
+
 
 class OllamaSettings(BaseModel):
     base_url: str = Field(default="http://localhost:11434")
@@ -58,7 +60,8 @@ class Settings(BaseModel):
             if self.active_session_id is not None
             else ""
         )
-        config_file.write_text(
+        return atomic_write_private(
+            config_file,
             f'project_name = "{self.project_name}"\n'
             f'data_dir = "{self.data_dir.as_posix()}"\n\n'
             f"active_target = {json.dumps(self.active_target or '')}\n\n"
@@ -68,6 +71,4 @@ class Settings(BaseModel):
             f'base_url = "{self.ollama.base_url}"\n'
             f'default_model = "{self.ollama.default_model}"\n'
             f"timeout_seconds = {self.ollama.timeout_seconds}\n",
-            encoding="utf-8",
         )
-        return config_file

@@ -178,14 +178,15 @@ shell ni degradación de las políticas existentes.
 
 **Objetivo:** preparar el proyecto para uso continuado por una persona o un equipo.
 
-- [ ] Sustituir capturas amplias por errores específicos y mensajes accionables.
-- [ ] Añadir logs estructurados sin secretos.
+- [x] Sustituir capturas amplias por errores específicos y mensajes accionables en los
+  flujos de CLI y almacenamiento de credenciales.
+- [x] Añadir logs estructurados sin secretos.
 - [x] Definir una política de backup y restauración de la base local.
 - [ ] Añadir exportación/importación de workspace.
-- [ ] Revisar permisos de archivos y directorios creados por `bbai`.
+- [x] Revisar permisos de archivos y directorios creados por `bbai`.
 - [x] Añadir pruebas de regresión para redacción, scope, aprobación y persistencia.
 - [ ] Medir tiempos, tamaño de contexto y coste local de las investigaciones.
-- [ ] Documentar límites conocidos y modelo de amenazas.
+- [x] Documentar límites conocidos y modelo de amenazas.
 
 **Criterio de salida:** el proyecto ofrece diagnósticos, recuperación y garantías
 operativas suficientes para confiar en él durante una investigación real.

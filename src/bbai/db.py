@@ -7,6 +7,8 @@ from alembic.config import Config
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
+from bbai.filesystem import secure_private_directory, secure_private_file
+
 
 class Base(DeclarativeBase):
     pass
@@ -22,7 +24,9 @@ def get_session_factory(db_path: str) -> sessionmaker[Session]:
 
 
 def init_db(db_path: str) -> None:
-    engine = get_engine(db_path)
+    database_path = Path(db_path)
+    secure_private_directory(database_path.parent)
+    engine = get_engine(str(database_path))
     config = Config()
     config.set_main_option(
         "script_location",
@@ -35,3 +39,4 @@ def init_db(db_path: str) -> None:
         connection = config.attributes["connection"]
         connection.close()
         engine.dispose()
+    secure_private_file(database_path)

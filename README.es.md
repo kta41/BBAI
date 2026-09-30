@@ -231,6 +231,10 @@ deshabilitado.
 No existe ejecución arbitraria de shell. Las herramientas externas se ejecutan con
 argumentos construidos por la aplicación, sin `shell=True`, con timeout y límite de
 salida.
+En POSIX, `.bbai/` se mantiene con permisos `0700`, y la base, configuración, backups,
+informes y `audit.jsonl` con `0600`. El audit log es JSONL y solo registra herramienta,
+estado, aprobación y duración; no incluye target, argumentos, salida ni credenciales.
+No es un registro inviolable: un usuario con acceso al workspace puede modificarlo.
 
 `bbai doctor` revisa el workspace, SQLite/migraciones/FTS5, Ollama y el modelo
 configurado, el keyring, el target activo y los binarios opcionales. Las advertencias

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -17,6 +18,9 @@ def test_database_backup_and_restore_preserve_both_database_states(tmp_path: Pat
 
     backup = create_database_backup(database, tmp_path / "backups" / "research.db")
     assert backup.exists()
+    if os.name == "posix":
+        assert backup.parent.stat().st_mode & 0o777 == 0o700
+        assert backup.stat().st_mode & 0o777 == 0o600
 
     service.add_target(name="later.example", scope="later.example")
     with pytest.raises(BackupError, match="Use --replace"):

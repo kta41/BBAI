@@ -46,6 +46,59 @@ that every unsafe action is prevented. Third-party tools installed through the
 setup wizard are separate projects with their own security policies, behavior,
 and licenses. Verify their options and use them only within authorized scope.
 
+## Threat model and operational boundaries
+
+### Assets and trust boundaries
+
+- The SQLite workspace contains targets, scope, evidence, session history, and
+  findings. Treat the database and its backups as sensitive assessment data.
+- `.bbai.toml` contains workspace and model endpoint configuration. Authentication
+  secrets are stored separately in the operating system keyring when a usable
+  keyring is available.
+- Reports may contain sensitive evidence even after known authentication secrets
+  are redacted. Review a report before sharing it.
+- The optional local JSONL audit log records only tool name, status, approval, and
+  elapsed time. It intentionally omits target names, arguments, tool output, and
+  credentials. It is not tamper-evident and is not a substitute for the database
+  execution history.
+- Ollama, DNS, network services, and third-party command-line tools are outside
+  the application's trust boundary. Data sent to a configured model endpoint is
+  subject to that endpoint's behavior and configuration.
+
+### Local filesystem protection
+
+On POSIX systems, bbai creates its data directory with mode `0700` and writes the
+configuration, SQLite database, generated reports, backups, and audit log with
+mode `0600`. These permissions reduce access by other local accounts; they do not
+protect data from the current user, root, compromised processes running as that
+user, filesystem snapshots, or backups copied elsewhere. Filesystem encryption
+and secure backup retention remain the operator's responsibility.
+
+Authentication secrets are not included in SQLite backups. Restoring a workspace
+does not restore the keyring entries it references.
+
+### Network and tool limitations
+
+Scope validation is hostname- and port-based. It does not pin DNS answers or
+prevent a permitted hostname from resolving to loopback, link-local, private, or
+otherwise unexpected addresses. Operators must review DNS and network routing
+for their environment. HTTP inspection does not follow redirects; Katana and
+Nuclei are configured to disable redirect following, but installed external tool
+versions and behaviors should still be verified.
+
+Human approval confirms an individual proposed tool call; it does not verify
+ownership or authorization. External tools may generate traffic beyond what their
+names imply, and their execution is limited by their own implementation as well
+as bbai's configured timeouts and output caps.
+
+### Logging and failure handling
+
+The structured audit log is local operational metadata, not a security event
+monitor or immutable audit trail. If it cannot be written after a tool execution,
+bbai reports the failure; the execution itself may already have happened and its
+database record may already exist. The operator should inspect the workspace
+before continuing.
+
 ## Política en español
 
 ### Versiones con soporte
@@ -83,3 +136,40 @@ investigar y corregir antes de publicar los detalles.
 salvaguardas, no sustituyen la autorización ni garantizan que se evite toda acción
 insegura. Las herramientas externas son proyectos separados con políticas, comportamiento
 y licencias propias; verifica su funcionamiento y úsalas solo dentro del scope autorizado.
+
+### Modelo de amenazas y límites operativos
+
+- SQLite guarda targets, scope, evidencias, historial de sesión y findings. La base y
+  sus backups deben tratarse como datos sensibles.
+- `.bbai.toml` guarda configuración del workspace y endpoint del modelo. Cuando el
+  sistema dispone de un keyring utilizable, las credenciales se guardan allí, separadas
+  de SQLite.
+- Los informes pueden incluir evidencias sensibles incluso después de redactar secretos
+  conocidos; revísalos antes de compartirlos.
+- El audit log JSONL registra solo herramienta, estado, aprobación y duración; omite
+  nombres de target, argumentos, salida y credenciales. No es inmutable ni reemplaza el
+  historial de ejecuciones en la base de datos.
+- Ollama, DNS, la red y las herramientas externas están fuera de la frontera de confianza
+  de la aplicación. El tratamiento de datos enviados al endpoint configurado depende de
+  ese endpoint.
+
+En POSIX, bbai crea el directorio de datos con modo `0700` y escribe configuración,
+SQLite, informes, backups y audit log con modo `0600`. Esto reduce el acceso de otras
+cuentas locales, pero no protege frente al usuario actual, root, procesos comprometidos
+con la misma cuenta, snapshots ni copias trasladadas a otros sistemas. El cifrado del
+filesystem y la retención segura de backups son responsabilidad de quien opera el
+workspace. Los backups de SQLite no incluyen secretos del keyring; restaurar la base no
+restaura las credenciales referenciadas.
+
+La validación de scope se basa en hostname y puerto: no fija las respuestas DNS ni
+impide que un hostname permitido resuelva a loopback, redes privadas, link-local u otras
+direcciones inesperadas. Revisa DNS y el enrutamiento de tu entorno. `http_inspect` no
+sigue redirecciones; Katana y Nuclei se configuran para no seguirlas, pero se deben
+verificar también las versiones instaladas y el comportamiento de esas herramientas.
+
+La aprobación humana valida una llamada propuesta, no la propiedad ni la autorización
+del target. Las herramientas externas pueden generar tráfico según su propia
+implementación y configuración, además de los límites de timeout y salida de bbai. El
+audit log es metadato operativo local, no monitor de seguridad ni registro inalterable.
+Si falla su escritura tras ejecutar una herramienta, la ejecución pudo ocurrir y quedar
+registrada en SQLite; inspecciona el workspace antes de continuar.

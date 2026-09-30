@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 
 from pytest import MonkeyPatch
@@ -69,6 +71,11 @@ def test_cli_finding_review_and_markdown_report(tmp_path: Path, monkeypatch: Mon
     assert "Debug disclosure" in report.stdout
     assert "X-Debug: enabled" in report.stdout
     assert "Verified manually." in report.stdout
+    report_path = tmp_path / "private-report.md"
+    written = runner.invoke(app, ["report", "1", "--output", str(report_path)])
+    assert written.exit_code == 0, written.stdout
+    if os.name == "posix":
+        assert report_path.stat().st_mode & 0o777 == 0o600
 
 
 def test_investigation_creates_and_resumes_persisted_session(
@@ -164,6 +171,13 @@ def test_dry_run_tool_call_is_traced_to_session(
     )
     assert executions[0]["status"] == "dry_run"
     assert executions[0]["session_id"] == 1
+    audit_log = tmp_path / ".bbai" / "audit.jsonl"
+    audit_event = json.loads(audit_log.read_text(encoding="utf-8").splitlines()[0])
+    assert audit_event["tool"] == "http_headers"
+    assert audit_event["status"] == "dry_run"
+    assert audit_event["approved"] is False
+    assert "arguments" not in audit_event
+    assert "https://example.com/" not in audit_log.read_text(encoding="utf-8")
     session = ProjectService(str(Settings.load(tmp_path).db_path)).get_session(1)
     assert [event["type"] for event in session["events"]] == [
         "question",

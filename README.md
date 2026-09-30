@@ -331,6 +331,10 @@ límite de salida. El modelo propone la herramienta, pero la aplicación valida 
 los argumentos, el protocolo, el scope y la aprobación humana antes de ejecutarla. `subfinder`,
 `ffuf`, `gau`, `katana` y `nuclei` deben estar instalados por el usuario y disponibles en
 `PATH`.
+En POSIX, `.bbai/` usa permisos `0700`, y la base, configuración, backups, informes y
+`audit.jsonl` usan `0600`. El audit log es JSONL y solo incluye herramienta, estado,
+aprobación y duración; no guarda target, argumentos, salida ni credenciales. No es
+inmutable: cualquier usuario con acceso al workspace puede modificarlo.
 
 `bbai doctor` revisa el workspace, SQLite/migraciones/FTS5, Ollama y el modelo configurado,
 el keyring, el target activo y los binarios opcionales. Las advertencias señalan

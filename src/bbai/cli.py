@@ -12,7 +12,9 @@ from typing import Annotated
 import httpx
 import typer
 from keyring.errors import KeyringError
+from sqlalchemy.exc import SQLAlchemyError
 
+from bbai.audit import ExecutionStatus, append_tool_audit_event
 from bbai.auth.models import AuthProfile
 from bbai.auth.redaction import redact_secrets
 from bbai.auth.resolver import resolve_auth
@@ -22,6 +24,7 @@ from bbai.config import Settings
 from bbai.context.builder import ContextInput, build_context
 from bbai.db import init_db
 from bbai.diagnostics import run_diagnostics
+from bbai.filesystem import atomic_write_private
 from bbai.llm.provider import OllamaProvider
 from bbai.services.project_service import FindingData, ProjectService
 from bbai.setup_wizard import run_setup_wizard
@@ -179,13 +182,26 @@ def add_auth_profile(
     store = KeyringSecretStore()
     try:
         store.set(secret_ref, payload)
+    except (KeyringError, OSError, ValueError) as exc:
+        typer.echo(f"Unable to store authentication secret in the system keyring: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    try:
         profile_id = service.add_auth_profile(
             target_name=selected_target,
             name=name,
             auth_type=auth_type,
             secret_ref=secret_ref,
         )
-    except Exception as exc:
+    except (SQLAlchemyError, ValueError) as exc:
+        try:
+            store.delete(secret_ref)
+        except (KeyringError, OSError) as cleanup_error:
+            typer.echo(
+                "Unable to save authentication profile and unable to remove the "
+                f"orphaned keyring entry: {cleanup_error}",
+                err=True,
+            )
+            raise typer.Exit(code=1) from cleanup_error
         typer.echo(f"Unable to save authentication profile: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(f"Authentication profile A-{profile_id:03d} '{name}' added to '{selected_target}'")
@@ -789,7 +805,7 @@ def ask_question(
                 system="You are a careful bug bounty research assistant. Keep the investigator in the loop and never act autonomously.",
             )
         )
-    except Exception as exc:  # pragma: no cover - defensive CLI error handling
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
         typer.echo(f"Unable to contact Ollama at {settings.ollama.base_url}: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
@@ -988,6 +1004,7 @@ def investigate(
                     f"\nEl modelo solicita usar {call.name}: {call.arguments} (auth: {auth_label})"
                 )
                 started = time.monotonic()
+                execution_status: ExecutionStatus
                 if dry_run:
                     result = "Dry run: tool was not executed."
                     execution_status = "dry_run"
@@ -1018,6 +1035,7 @@ def investigate(
                         execution_status = "failed"
                         approved = True
                 result = redact_secrets(result, secret_values)
+                duration_ms = round((time.monotonic() - started) * 1000)
                 service.add_tool_execution(
                     target_name=selected_target,
                     tool_name=call.name,
@@ -1026,9 +1044,23 @@ def investigate(
                     approved=approved,
                     output=result if execution_status == "succeeded" else None,
                     error=result if execution_status in {"failed", "denied"} else None,
-                    duration_ms=round((time.monotonic() - started) * 1000),
+                    duration_ms=duration_ms,
                     session_id=selected_session_id,
                 )
+                try:
+                    append_tool_audit_event(
+                        settings.project_root / settings.data_dir / "audit.jsonl",
+                        tool_name=call.name,
+                        status=execution_status,
+                        approved=approved,
+                        duration_ms=duration_ms,
+                    )
+                except OSError as exc:
+                    raise RuntimeError(
+                        "Tool execution was recorded in the database, but the audit log "
+                        "could not be written. Check workspace directory permissions "
+                        "before continuing."
+                    ) from exc
                 service.add_session_event(
                     selected_session_id,
                     event_type="tool_result",
@@ -1118,7 +1150,7 @@ def analyze_evidence(
                 system="You are a cautious assistant for technical evidence review. Stay within the human-approved investigation scope.",
             )
         )
-    except Exception as exc:  # pragma: no cover - defensive CLI error handling
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
         typer.echo(f"Unable to contact Ollama at {settings.ollama.base_url}: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
@@ -1303,8 +1335,11 @@ def generate_report(
     rendered = redact_secrets(rendered, secrets)
     if output_path:
         output_path = output_path.expanduser().resolve()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(rendered + "\n", encoding="utf-8")
+        try:
+            atomic_write_private(output_path, rendered + "\n")
+        except OSError as exc:
+            typer.echo(f"Unable to write report to '{output_path}': {exc}", err=True)
+            raise typer.Exit(code=1) from exc
         typer.echo(f"Report written to {output_path}")
     else:
         typer.echo(rendered)
