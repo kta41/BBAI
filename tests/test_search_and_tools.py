@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 
 from pytest import MonkeyPatch
 
@@ -9,8 +12,22 @@ from bbai.auth.models import AuthContext, AuthProfile
 from bbai.config import Settings
 from bbai.diagnostics import run_diagnostics
 from bbai.services.project_service import ProjectService
-from bbai.tools.base import GauTool, KatanaTool, NucleiTool
-from bbai.tools.registry import build_tools, tool_availability, tool_definitions
+from bbai.tools.base import (
+    GauTool,
+    HttpInspectTool,
+    KatanaTool,
+    NucleiTool,
+    _validate_scoped_url,
+    is_host_in_scope,
+    is_url_in_scope,
+)
+from bbai.tools.policy import ScopePolicy
+from bbai.tools.registry import (
+    build_tools,
+    tool_availability,
+    tool_definitions,
+    tool_security_metadata,
+)
 
 
 def test_fts_search_backfills_indexes_and_updates_findings(tmp_path: Path) -> None:
@@ -127,6 +144,106 @@ def test_gau_filters_archive_results_to_scope(monkeypatch: MonkeyPatch) -> None:
         raise AssertionError("gau must reject domains outside scope")
 
 
+def test_scope_matching_normalizes_idn_ips_and_label_boundaries() -> None:
+    assert is_host_in_scope("bücher.example", "xn--bcher-kva.example")
+    assert is_host_in_scope("api.xn--bcher-kva.example.", "*.bücher.example")
+    assert is_host_in_scope("192.0.2.10", "192.0.2.10")
+    assert is_host_in_scope("2001:db8::1", "2001:db8::1")
+    assert is_url_in_scope("example.com", 443, "example.com")
+    assert is_url_in_scope("example.com", 8443, "*.example.com:8443")
+    assert not is_url_in_scope("example.com", 8443, "*.example.com")
+    assert not is_url_in_scope("example.com", 443, "example.com:8443")
+    assert not is_host_in_scope("notexample.com", "*.example.com")
+    assert not is_host_in_scope("example.com.attacker.test", "example.com")
+    assert not is_host_in_scope("badexample.com", "*example.com")
+
+
+def test_scoped_url_validates_ports_and_rejects_credentials() -> None:
+    parsed = _validate_scoped_url("https://example.com:8443/", "example.com:8443", "test")
+    assert parsed.port == 8443
+    _validate_scoped_url(
+        "https://bücher.example:8443/",
+        "xn--bcher-kva.example:8443",
+        "test",
+    )
+    _validate_scoped_url(
+        "https://[2001:db8::1]:8443/",
+        "[2001:db8::1]:8443",
+        "test",
+    )
+    parsed_default = _validate_scoped_url("https://example.com/", "example.com", "test")
+    assert parsed_default.port is None
+    try:
+        _validate_scoped_url("https://example.com:8443/", "example.com", "test")
+    except ValueError as exc:
+        assert "outside the approved scope" in str(exc)
+    else:
+        raise AssertionError("non-standard ports must be explicitly included in scope")
+    credentialed_url = "https://" + "researcher" + "@" + "example.com/"
+    for url in (
+        credentialed_url,
+        "https://@example.com/",
+        "https://example.com:0/",
+        "https://example.com:65536/",
+        "https://example.com:invalid/",
+    ):
+        try:
+            _validate_scoped_url(url, "example.com", "test")
+        except ValueError:
+            continue
+        raise AssertionError(f"invalid URL should be rejected: {url}")
+
+
+def test_http_tool_accepts_valid_ports_and_rejects_invalid_ports_or_credentials() -> None:
+    tool = HttpInspectTool(scope="example.com")
+    parsed = tool.execute
+    assert callable(parsed)
+    assert is_host_in_scope("example.com", "example.com")
+
+    for url in (
+        "https://user:password@example.com/",
+        "https://example.com:0/",
+        "https://example.com:65536/",
+        "https://example.com:invalid/",
+    ):
+        try:
+            tool.execute(url=url)
+        except ValueError as exc:
+            assert "URL" in str(exc)
+        else:
+            raise AssertionError(f"invalid URL should be rejected: {url}")
+
+
+def test_http_inspect_does_not_follow_redirects() -> None:
+    requested_paths: list[str] = []
+
+    class RedirectHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            requested_paths.append(self.path)
+            self.send_response(302)
+            self.send_header("Location", "/redirected")
+            self.end_headers()
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        result = HttpInspectTool(scope=f"127.0.0.1:{port}").execute(
+            url=f"http://127.0.0.1:{server.server_port}/start"
+        )
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+    assert "STATUS: 302" in result
+    assert requested_paths == ["/start"]
+
+
 def test_katana_is_host_constrained_and_filters_discovered_urls(
     monkeypatch: MonkeyPatch,
 ) -> None:
@@ -158,6 +275,10 @@ def test_katana_is_host_constrained_and_filters_discovered_urls(
     assert "secret-value" not in results
     assert command[command.index("-d") + 1] == "2"
     assert command[command.index("-rl") + 1] == "5"
+    assert "-disable-redirects" in command
+    crawl_scope = command[command.index("-cs") + 1]
+    assert re.search(crawl_scope, "https://example.com/a")
+    assert not re.search(crawl_scope, "https://example.com:8443/a")
 
 
 def test_nuclei_uses_only_bundled_templates_and_fixed_safe_limits(
@@ -197,6 +318,7 @@ def test_nuclei_uses_only_bundled_templates_and_fixed_safe_limits(
     assert command[command.index("-c") + 1] == "2"
     assert command[command.index("-retries") + 1] == "0"
     assert "-no-interactsh" in command
+    assert "-disable-redirects" in command
     assert any(argument == "X-Test-Auth: enabled" for argument in command)
     assert result == "[info] Missing CSP: https://example.com/"
     assert "Unexpected" not in result
@@ -212,5 +334,30 @@ def test_registry_exposes_new_tools_and_retains_human_policy() -> None:
     assert {"gau", "katana", "nuclei"} <= tools.keys()
     assert tools["ffuf"].auth is auth  # type: ignore[attr-defined]
     assert {tool["function"]["name"] for tool in tool_definitions(tools)} == set(tools)
+    metadata = tool_security_metadata()
+    assert {item["activity"] for item in metadata.values()} <= {
+        "passive",
+        "active_read",
+        "intrusive",
+    }
+    assert all(item["approval_required"] is True for item in metadata.values())
+    assert metadata["gau"]["activity"] == "passive"
+    assert metadata["ffuf"]["risk"] == "high"
+    policy = ScopePolicy(
+        allowed_tools=frozenset(tools),
+        approval_required=False,
+        tool_approval_required={
+            name: tool.approval_required for name, tool in tools.items()
+        },
+    )
+    assert all(policy.requires_approval(name) for name in tools)
+    assert not ScopePolicy(
+        frozenset({"safe"}),
+        approval_required=False,
+        tool_approval_required={"safe": False},
+    ).requires_approval("safe")
+    assert ScopePolicy(frozenset({"listed"}), approval_required=False).requires_approval(
+        "listed"
+    )
     availability = tool_availability()
     assert {"gau", "katana", "nuclei"} <= availability.keys()

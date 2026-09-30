@@ -311,6 +311,14 @@ proponer siete herramientas, siempre con aprobación interactiva y scope obligat
 - `nuclei`: solo ejecuta dos comprobaciones locales de bajo impacto para cabeceras HTTP;
   el modelo no puede elegir plantillas ni límites.
 
+`bbai tool list` muestra la clasificación, el riesgo, el permiso, la aprobación requerida
+y los límites de timeout/salida de cada integración. El scope por hostname autoriza
+HTTP/HTTPS en los puertos estándar 80 y 443; para un puerto no estándar debe añadirse
+explícitamente, por ejemplo `example.com:8443` o `*.example.com:8443`. Para IPv6 con
+puerto se usa `[2001:db8::1]:8443`. Las URLs con credenciales embebidas se rechazan.
+`http_inspect` no sigue redirecciones y `katana`/`nuclei` se ejecutan con el seguimiento
+de redirecciones deshabilitado.
+
 ```bash
 bbai target use example.com
 bbai investigate "Comprueba https://example.com/ y resume la respuesta"

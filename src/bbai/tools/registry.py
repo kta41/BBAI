@@ -26,6 +26,19 @@ TOOL_NAMES = (
     "nuclei",
 )
 
+TOOL_CLASSES: dict[str, type[Tool]] = {
+    tool.name: tool
+    for tool in (
+        HttpInspectTool,
+        HttpHeadersTool,
+        SubfinderTool,
+        FfufTool,
+        GauTool,
+        KatanaTool,
+        NucleiTool,
+    )
+}
+
 
 def build_tools(
     *, scope: str, timeout_seconds: int, auth: AuthContext | None = None
@@ -68,4 +81,18 @@ def tool_availability() -> dict[str, str]:
         "gau": "available" if shutil.which("gau") else "missing",
         "katana": "available" if shutil.which("katana") else "missing",
         "nuclei": "available" if shutil.which("nuclei") else "missing",
+    }
+
+
+def tool_security_metadata() -> dict[str, dict[str, str | int | bool]]:
+    return {
+        name: {
+            "activity": tool.activity,
+            "risk": tool.risk_level,
+            "approval_required": tool.approval_required,
+            "permission": tool.permission,
+            "timeout_limit_seconds": tool.timeout_limit_seconds,
+            "output_limit_chars": tool.output_limit_chars,
+        }
+        for name, tool in TOOL_CLASSES.items()
     }

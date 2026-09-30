@@ -56,6 +56,15 @@ def test_target_add_and_list(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     assert "example.com" in result.stdout
 
 
+def test_tool_list_displays_scope_and_safety_metadata() -> None:
+    result = runner.invoke(app, ["tool", "list"])
+    assert result.exit_code == 0
+    assert "http_inspect: built-in [active_read, medium risk, approval required" in result.stdout
+    assert "gau: " in result.stdout
+    assert "[passive, low risk, approval required" in result.stdout
+    assert "timeout <= 15s" in result.stdout
+
+
 def test_target_use_and_evidence_list(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     runner.invoke(app, ["init"])

@@ -157,18 +157,18 @@ del modelo.
 
 ## Fase 6 — Herramientas e integraciones
 
-**Estado: primera tanda completada; hardening y adaptadores pendientes.**
+**Estado: primera tanda y hardening de scope/aprobación completados; adaptadores pendientes.**
 
 **Objetivo:** ampliar cobertura manteniendo una frontera de seguridad explícita.
 
-- [ ] Definir una clasificación de herramientas: pasivas, lectura activa e intrusivas.
-- [ ] Asociar a cada herramienta límites, permisos, riesgos y requisitos de aprobación.
+- [x] Definir una clasificación de herramientas: pasivas, lectura activa e intrusivas.
+- [x] Asociar a cada herramienta límites, permisos, riesgos y requisitos de aprobación.
 - [x] Añadir health checks y diagnóstico de dependencias externas mediante `bbai doctor`.
 - [x] Crear integraciones aisladas para `gau`, `katana` y `nuclei` con scope y límites.
 - [ ] Añadir adaptadores para importar resultados estructurados comunes.
-- [ ] Probar redirecciones, puertos, wildcards, IDN, URLs con credenciales y límites de
+- [x] Probar redirecciones, puertos, wildcards, IDN, URLs con credenciales y límites de
   scope.
-- [ ] Añadir tests de integración con servidores HTTP locales y mocks de Ollama.
+- [x] Añadir tests de integración con servidores HTTP locales y mocks de Ollama.
 - [x] Implementar `bbai doctor`.
 
 **Criterio de salida:** nuevas herramientas pueden incorporarse sin acceso arbitrario al

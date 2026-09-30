@@ -26,7 +26,12 @@ from bbai.llm.provider import OllamaProvider
 from bbai.services.project_service import FindingData, ProjectService
 from bbai.setup_wizard import run_setup_wizard
 from bbai.tools.policy import ScopePolicy
-from bbai.tools.registry import build_tools, tool_availability, tool_definitions
+from bbai.tools.registry import (
+    build_tools,
+    tool_availability,
+    tool_definitions,
+    tool_security_metadata,
+)
 
 app = typer.Typer(help="Local research assistant for Bug Bounty investigations with Ollama.")
 
@@ -503,8 +508,18 @@ def close_session(
 
 @_tool_app.command("list")
 def list_tools() -> None:
-    for name, status_value in tool_availability().items():
-        typer.echo(f"- {name}: {status_value}")
+    availability = tool_availability()
+    metadata = tool_security_metadata()
+    for name, status_value in availability.items():
+        policy = metadata[name]
+        approval = "approval required" if policy["approval_required"] else "no approval"
+        typer.echo(
+            f"- {name}: {status_value} "
+            f"[{policy['activity']}, {policy['risk']} risk, {approval}, "
+            f"{policy['permission']}, "
+            f"timeout <= {policy['timeout_limit_seconds']}s, "
+            f"output <= {policy['output_limit_chars']} chars]"
+        )
 
 
 @_tool_app.command("check")
@@ -868,7 +883,13 @@ def investigate(
     )
     tool_timeout = min(settings.ollama.timeout_seconds, 60)
     tools = build_tools(scope=scope, timeout_seconds=tool_timeout, auth=auth_context)
-    policy = ScopePolicy(allowed_tools=frozenset(tools), approval_required=True)
+    policy = ScopePolicy(
+        allowed_tools=frozenset(tools),
+        approval_required=False,
+        tool_approval_required={
+            name: tool.approval_required for name, tool in tools.items()
+        },
+    )
     definitions = tool_definitions(tools)
     context = build_context(
         ContextInput(
@@ -971,7 +992,7 @@ def investigate(
                     result = "Dry run: tool was not executed."
                     execution_status = "dry_run"
                     approved = False
-                elif not policy.requires_approval(call.name) or not typer.confirm(
+                elif policy.requires_approval(call.name) and not typer.confirm(
                     "¿Autorizar esta herramienta?", default=False
                 ):
                     result = "Human approval denied; do not retry this tool call."
