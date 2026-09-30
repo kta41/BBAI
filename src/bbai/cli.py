@@ -5,7 +5,7 @@ import json
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -17,6 +17,7 @@ from bbai.auth.models import AuthProfile
 from bbai.auth.redaction import redact_secrets
 from bbai.auth.resolver import resolve_auth
 from bbai.auth.store import KeyringSecretStore
+from bbai.backup import BackupError, create_database_backup, restore_database_backup
 from bbai.config import Settings
 from bbai.context.builder import ContextInput, build_context
 from bbai.db import init_db
@@ -247,6 +248,56 @@ def doctor() -> None:
         typer.echo(f"[{symbols[check['status']]}] {check['name']}: {check['detail']}")
     if any(check["status"] == "error" for check in checks):
         raise typer.Exit(code=1)
+
+
+@app.command("backup")
+def backup_workspace(
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="Output file (defaults to the configured data dir)."),
+    ] = None,
+) -> None:
+    """Create a consistent SQLite backup of the current workspace."""
+    settings = Settings.load(Path.cwd())
+    timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S-%f")
+    destination = output or (
+        settings.project_root / settings.data_dir / "backups" / f"bbai-{timestamp}.db"
+    )
+    try:
+        backup_path = create_database_backup(settings.db_path, destination)
+    except BackupError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Workspace database backed up to {backup_path}")
+    typer.echo("Authentication secrets in the system keyring are not included.")
+
+
+@app.command("restore")
+def restore_workspace(
+    backup_file: Annotated[Path, typer.Argument(help="SQLite backup file to restore.")],
+    replace: Annotated[
+        bool,
+        typer.Option(
+            "--replace",
+            help="Replace the current database after saving it as a pre-restore backup.",
+        ),
+    ] = False,
+) -> None:
+    """Restore a workspace database from a backup file."""
+    settings = Settings.load(Path.cwd())
+    try:
+        restored_path, previous_backup = restore_database_backup(
+            backup_file,
+            settings.db_path,
+            replace_existing=replace,
+        )
+    except BackupError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Workspace database restored to {restored_path}")
+    if previous_backup is not None:
+        typer.echo(f"Previous database preserved at {previous_backup}")
+    typer.echo("Authentication secrets in the system keyring are not included.")
 
 
 @app.command("search")

@@ -180,10 +180,10 @@ shell ni degradación de las políticas existentes.
 
 - [ ] Sustituir capturas amplias por errores específicos y mensajes accionables.
 - [ ] Añadir logs estructurados sin secretos.
-- [ ] Definir una política de backup y restauración de la base local.
+- [x] Definir una política de backup y restauración de la base local.
 - [ ] Añadir exportación/importación de workspace.
 - [ ] Revisar permisos de archivos y directorios creados por `bbai`.
-- [ ] Añadir pruebas de regresión para redacción, scope, aprobación y persistencia.
+- [x] Añadir pruebas de regresión para redacción, scope, aprobación y persistencia.
 - [ ] Medir tiempos, tamaño de contexto y coste local de las investigaciones.
 - [ ] Documentar límites conocidos y modelo de amenazas.
 

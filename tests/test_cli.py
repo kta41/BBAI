@@ -105,3 +105,29 @@ def test_auth_profile_list_uses_metadata_only(tmp_path: Path, monkeypatch: Monke
     result = runner.invoke(app, ["auth", "list"])
     assert result.exit_code == 0
     assert "No authentication profiles" in result.stdout
+
+
+def test_cli_backup_and_restore_preserve_existing_database(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    assert runner.invoke(app, ["init", "--skip-dependency-setup"]).exit_code == 0
+    assert runner.invoke(app, ["target", "add", "example.com", "--scope", "example.com"]).exit_code == 0
+    backup_path = tmp_path / "research.db"
+    created = runner.invoke(app, ["backup", "--output", str(backup_path)])
+    assert created.exit_code == 0, created.stdout
+    assert backup_path.exists()
+
+    assert runner.invoke(app, ["target", "add", "later.example", "--scope", "later.example"]).exit_code == 0
+    refused = runner.invoke(app, ["restore", str(backup_path)])
+    assert refused.exit_code == 1
+    assert "--replace" in refused.output
+
+    restored = runner.invoke(app, ["restore", str(backup_path), "--replace"])
+    assert restored.exit_code == 0, restored.stdout
+    assert "Previous database preserved at" in restored.stdout
+    targets = runner.invoke(app, ["target", "list"])
+    assert targets.exit_code == 0
+    assert "example.com" in targets.stdout
+    assert "later.example" not in targets.stdout

@@ -189,6 +189,23 @@ Por defecto, los informes incluyen únicamente findings aceptados o reportados.
 `--include-drafts` permite exportar explícitamente estados no aceptados. Antes de
 mostrar o escribir el informe se redactan secretos de los perfiles activos del keyring.
 
+## Backup y restauración
+
+`bbai backup` crea una copia consistente de la base SQLite en `.bbai/backups/`; se
+puede indicar otra ruta con `--output`. Para restaurarla:
+
+```bash
+bbai backup --output ./bbai-backup.db
+bbai restore ./bbai-backup.db
+bbai restore ./bbai-backup.db --replace
+```
+
+La restauración no sobrescribe una base existente a menos que se indique `--replace`.
+En ese caso, la base actual se conserva junto a ella con el sufijo
+`.pre-restore-<n>.bak`. Los backups contienen la base de investigación, pero no
+`.bbai.toml` ni las credenciales guardadas en el keyring. Trátalos como datos sensibles
+y evita subirlos al repositorio.
+
 ## Herramientas y seguridad
 
 Ollama puede proponer siete herramientas, siempre con aprobación interactiva y scope

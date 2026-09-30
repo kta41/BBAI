@@ -208,6 +208,23 @@ Los informes incluyen solo findings aceptados/reportados de forma predeterminada
 almacenados en los perfiles activos del keyring se redactan antes de mostrar o escribir
 el informe.
 
+## Backup y restauración
+
+`bbai backup` crea una copia consistente de la base SQLite en `.bbai/backups/`; se
+puede indicar otra ruta con `--output`. Para restaurarla:
+
+```bash
+bbai backup --output ./bbai-backup.db
+bbai restore ./bbai-backup.db
+bbai restore ./bbai-backup.db --replace
+```
+
+La restauración no sobrescribe una base existente a menos que se indique `--replace`.
+En ese caso, la base actual se conserva junto a ella con el sufijo
+`.pre-restore-<n>.bak`. Los backups contienen la base de investigación, pero no
+`.bbai.toml` ni las credenciales guardadas en el keyring. Trátalos como datos sensibles
+y evita subirlos al repositorio.
+
 ## Evidencias
 
 Las evidencias se almacenan en SQLite y se incorporan automáticamente al contexto de
