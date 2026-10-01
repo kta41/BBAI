@@ -20,12 +20,8 @@ target data in public issues, pull requests, or demonstration material.
 
 Please do not report suspected vulnerabilities in a public GitHub issue.
 
-Use GitHub's private vulnerability reporting feature from the repository's
-**Security** tab (**Report a vulnerability**) when it is enabled. If the feature
-is unavailable, contact the repository maintainers privately through the contact
-method listed on the repository owner's GitHub profile. If no private contact
-method is available, open a public issue asking for a private reporting channel
-without including vulnerability details or sensitive data.
+Please reach out directly via email at `kta41@proton.me` without including
+vulnerability details or sensitive data in a public issue.
 
 Include, when safe to do so:
 
@@ -119,11 +115,9 @@ pull requests o ejemplos.
 
 ### Reportar una vulnerabilidad
 
-No publiques vulnerabilidades sospechadas en un issue público. Usa la función privada de
-GitHub desde **Security → Report a vulnerability**, si está habilitada. Si no lo está,
-contacta en privado con los mantenedores mediante el canal indicado en el perfil GitHub
-del propietario. Si no hay un canal privado disponible, abre un issue público solicitando
-un canal privado, sin incluir detalles ni datos sensibles.
+No publiques vulnerabilidades sospechadas en un issue público. Contacta directamente
+por correo electrónico en `kta41@proton.me`, sin incluir detalles de la vulnerabilidad
+ni datos sensibles en un issue público.
 
 Cuando sea seguro, incluye la versión/commit y entorno afectados, una descripción breve
 del impacto, pasos mínimos reproducibles que no accedan a sistemas o datos de terceros y
